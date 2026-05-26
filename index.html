@@ -171,53 +171,59 @@ body {
 </div>
 
 <script>
-// ===== CDN 多源回退加载器 =====
-const CDN_SOURCES = [
-  'https://unpkg.com/@mediapipe/',
-  'https://cdn.jsdelivr.net/npm/@mediapipe/',
-];
-const MP_SCRIPTS = [
-  'camera_utils/camera_utils.js',
-  'control_utils/control_utils.js',  
-  'drawing_utils/drawing_utils.js',
-  'hands/hands.js',
-];
-let currentCdnIndex = -1;
+// ===== 本地加载 MediaPipe 库（不依赖外部 CDN） =====
+const MP_BASE = './mediapipe/';
 window._mpReady = false;
 window._mpResolve = null;
 window.mpReadyPromise = new Promise(r => { window._mpResolve = r; });
 
-async function _loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = src; s.crossOrigin = 'anonymous';
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error('script load failed'));
-    document.head.appendChild(s);
-  });
-}
-
-async function _loadMediaPipe(cdnIdx) {
-  if (cdnIdx >= CDN_SOURCES.length) {
-    window._mpResolve(false);
-    return;
-  }
-  const base = CDN_SOURCES[cdnIdx];
+(async function _loadMediaPipeLocal() {
+  const scripts = [
+    'camera_utils.js',
+    'control_utils.js',
+    'drawing_utils.js',
+    'hands.js',
+  ];
   try {
-    for (const f of MP_SCRIPTS) {
-      await _loadScript(base + f);
+    for (const f of scripts) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = MP_BASE + f;
+        s.onload = resolve;
+        s.onerror = () => reject(new Error('load failed: ' + f));
+        document.head.appendChild(s);
+      });
     }
-    currentCdnIndex = cdnIdx;
-    window._mpCdns = CDN_SOURCES;
-    window._mpCdnIdx = cdnIdx;
     window._mpReady = true;
     window._mpResolve(true);
   } catch (e) {
-    console.warn('CDN ' + base + ' 加载失败，尝试回退...');
-    await _loadMediaPipe(cdnIdx + 1);
+    // 本地加载失败，回退到 CDN
+    console.warn('本地加载失败:', e.message, '尝试 CDN...');
+    const CDN = 'https://unpkg.com/@mediapipe/';
+    const cdnScripts = [
+      'camera_utils/camera_utils.js',
+      'control_utils/control_utils.js',
+      'drawing_utils/drawing_utils.js',
+      'hands/hands.js',
+    ];
+    try {
+      for (const f of cdnScripts) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = CDN + f; s.crossOrigin = 'anonymous';
+          s.onload = resolve;
+          s.onerror = () => reject(new Error('CDN load failed: ' + f));
+          document.head.appendChild(s);
+        });
+      }
+      window._mpReady = true;
+      window._mpResolve(true);
+    } catch (e2) {
+      console.error('所有加载方式均失败');
+      window._mpResolve(false);
+    }
   }
-}
-_loadMediaPipe(0);
+})();
 </script>
 
 <script>
@@ -1485,18 +1491,17 @@ async function initCamera() {
 async function initHands() {
   const lt = document.getElementById('loader-text');
   
-  // 用加载成功的 CDN 来加载 WASM 模型文件，失败则回退
-  const startIdx = (window._mpCdnIdx >= 0) ? window._mpCdnIdx : 0;
-  let hands = null;
-  let cam = null;
+  // 优先用本地文件，失败则 CDN 回退
+  const trySources = [
+    { base: './mediapipe/hands/', label: '本地' },
+    { base: 'https://unpkg.com/@mediapipe/hands@0.4.1675469240/', label: 'CDN' },
+  ];
   
-  for (let attempt = 0; attempt < CDN_SOURCES.length; attempt++) {
-    const cdnIdx = (startIdx + attempt) % CDN_SOURCES.length;
-    const cdnBase = CDN_SOURCES[cdnIdx];
+  for (const src of trySources) {
     try {
-      lt.textContent = '加载 AI 模型...';
-      hands = new Hands({
-        locateFile: (f) => cdnBase + 'hands/' + f
+      lt.textContent = '加载 AI 模型 (' + src.label + ')...';
+      const hands = new Hands({
+        locateFile: (f) => src.base + f
       });
       hands.setOptions({
         maxNumHands: 1, modelComplexity: 1,
@@ -1509,7 +1514,7 @@ async function initHands() {
           game.processHand(null);
         }
       });
-      cam = new Camera(video, {
+      const cam = new Camera(video, {
         onFrame: async () => { await hands.send({ image: video }); },
         width: 640, height: 480,
       });
@@ -1519,16 +1524,12 @@ async function initHands() {
       loadingOverlay.classList.add('hidden');
       statusDot.classList.add('active');
       statusText.textContent = '已就绪 · 请选择模式';
-      return; // 成功
+      return;
     } catch (e) {
-      console.warn('WASM CDN ' + cdnBase + ' 失败:', e.message);
-      if (attempt < CDN_SOURCES.length - 1) {
-        lt.textContent = '切换线路...';
-      }
+      console.warn('Model load failed (' + src.label + '):', e.message);
     }
   }
-  // 所有 CDN 都失败
-  throw new Error('所有 CDN 源都无法加载 AI 模型');
+  throw new Error('无法加载 AI 模型');
 }
 
 // 主循环
