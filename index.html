@@ -228,24 +228,6 @@ window.mpReadyPromise = new Promise(r => { window._mpResolve = r; });
 
 <script>
 // ============================================================
-// 微信浏览器检测 - 提示用户跳转外部浏览器
-// ============================================================
-(function() {
-  const ua = navigator.userAgent.toLowerCase();
-  const isWeChat = ua.indexOf('micromessenger') !== -1;
-  if (isWeChat) {
-    const tip = document.getElementById('wechat-tip');
-    tip.style.display = 'flex';
-    // 阻止背后页面交互
-    document.getElementById('container').style.pointerEvents = 'none';
-    document.getElementById('wechat-url').textContent = location.href.replace(/^https?:\/\//,'');
-    return; // 微信内不加载游戏
-  }
-  // 非微信浏览器，正常启动
-  window._startGame();
-})();
-
-// ============================================================
 // 常量
 // ============================================================
 const GRAVITY = 650;
@@ -1594,6 +1576,24 @@ window._startGame = async function() {
     loadingOverlay.style.display = 'flex';
   }
 };
+</script>
+<script>
+// ============================================================
+// 微信浏览器检测 + 自动启动（在所有定义完成后执行）
+// ============================================================
+(function() {
+  const ua = navigator.userAgent.toLowerCase();
+  const isWeChat = ua.indexOf('micromessenger') !== -1;
+  if (isWeChat) {
+    const tip = document.getElementById('wechat-tip');
+    tip.style.display = 'flex';
+    document.getElementById('container').style.pointerEvents = 'none';
+    document.getElementById('wechat-url').textContent = location.href.replace(/^https?:\/\//,'');
+    return;
+  }
+  // 非微信浏览器，正常启动
+  window._startGame();
+})();
 </script>
 </body>
 </html>
