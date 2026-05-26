@@ -873,6 +873,11 @@ class FruitNinjaGame {
     // 无限模式
     this.lives = 3;
 
+    // 炸弹计数
+    this.bombHits = 0;
+    this.bombMaxHits = 3;
+    this.bombFlash = 0;
+
     // 指尖
     this.fingertipX = 0; this.fingertipY = 0;
     this.prevTipX = 0; this.prevTipY = 0;
@@ -901,7 +906,7 @@ class FruitNinjaGame {
   startEndlessMode() {
     this.mode = GameMode.ENDLESS;
     this.score = 0; this.combo = 0; this.maxCombo = 0;
-    this.lives = 3; this.gameOver = false;
+    this.lives = 3; this.bombHits = 0; this.bombFlash = 0; this.gameOver = false;
     this.fruits = []; this.halves = []; this.particles = []; this.popups = []; this.comboEffects = [];
     this.slashTrail = new SlashTrail();
     this.spawnTimer = 0;
@@ -923,6 +928,8 @@ class FruitNinjaGame {
     this.score = 0;
     this.combo = 0;
     this.maxCombo = 0;
+    this.bombHits = 0;
+    this.bombFlash = 0;
     this.gameOver = false;
     this.fruits = [];
     this.halves = [];
@@ -974,9 +981,19 @@ class FruitNinjaGame {
     const slashAngle = Math.atan2(dy, dx);
 
     if (fruit.type.isBomb) {
-      if (this.mode === GameMode.ENDLESS) { this.lives = 0; this._endGame(); }
-      else { this._failStage('切到炸弹了！'); }
+      this.bombHits++;
+      this.bombFlash = 0.4;
       this._explode(fruit.x, fruit.y);
+      this.shakeAmt = 12;
+      // 炸弹警告提示
+      const remain = this.bombMaxHits - this.bombHits;
+      if (remain > 0) {
+        this.popups.push(new ScorePopup(fruit.x, fruit.y - 20, `💣 ${remain}/3`, '#ff5252'));
+      }
+      if (this.bombHits >= this.bombMaxHits) {
+        if (this.mode === GameMode.ENDLESS) { this.lives = 0; this._endGame(); }
+        else { this._failStage(`切到 ${this.bombHits} 个炸弹，被炸飞了！`); }
+      }
       return;
     }
 
@@ -1202,6 +1219,7 @@ class FruitNinjaGame {
     }
 
     this.shakeAmt *= 0.85;
+    if (this.bombFlash > 0) this.bombFlash -= dt;
   }
 
   // ---------- 绘制 ----------
@@ -1238,6 +1256,13 @@ class FruitNinjaGame {
 
     ctx.restore();
 
+    // 炸弹红色闪屏
+    if (this.bombFlash > 0) {
+      const flashAlpha = this.bombFlash / 0.4 * 0.3;
+      ctx.fillStyle = `rgba(255,30,30,${flashAlpha})`;
+      ctx.fillRect(0, 0, this.w, this.h);
+    }
+
     // UI（不受震动影响）
     this._drawUI(ctx);
   }
@@ -1252,6 +1277,12 @@ class FruitNinjaGame {
         ctx.fillStyle = i < this.lives ? '#ff5252' : 'rgba(255,255,255,0.12)';
         ctx.font = '20px sans-serif'; ctx.textAlign = 'left'; ctx.fillText('✖', lx, ly);
       }
+      // 炸弹计数
+      const bombLeft = this.bombMaxHits - this.bombHits;
+      ctx.fillStyle = bombLeft <= 1 ? '#ff5252' : 'rgba(255,255,255,0.5)';
+      ctx.font = '12px "PingFang SC","Microsoft YaHei",sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(`💣 ${bombLeft}/${this.bombMaxHits}`, m, m + 42);
       // 分数
       ctx.fillStyle = '#fff'; ctx.font = 'bold 36px "PingFang SC","Microsoft YaHei",sans-serif';
       ctx.textAlign = 'center'; ctx.shadowColor = 'rgba(255,255,255,0.4)'; ctx.shadowBlur = 12;
@@ -1296,6 +1327,13 @@ class FruitNinjaGame {
       ctx.font = '12px "PingFang SC","Microsoft YaHei",sans-serif';
       ctx.textAlign = 'right';
       ctx.fillText(`失误: ${this.stageMisses}/${cfg.maxMiss}`, this.w - m, m + 24);
+
+      // 炸弹计数
+      const bombLeft = this.bombMaxHits - this.bombHits;
+      ctx.fillStyle = bombLeft <= 1 ? '#ff5252' : 'rgba(255,182,60,0.7)';
+      ctx.font = '12px "PingFang SC","Microsoft YaHei",sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`💣 ${bombLeft}/${this.bombMaxHits}`, this.w - m, m + 44);
 
       // 剩余水果
       ctx.fillStyle = 'rgba(255,255,255,0.4)';
