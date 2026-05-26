@@ -68,6 +68,16 @@ body {
 </style>
 </head>
 <body>
+<!-- 微信浏览器提示 -->
+<div id="wechat-tip" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;z-index:9999;background:radial-gradient(ellipse at center,#3E2723 0%,#1B0E00 100%);flex-direction:column;align-items:center;justify-content:center;font-family:'PingFang SC','Microsoft YaHei',sans-serif;color:#fff;text-align:center;padding:30px;">
+  <div style="font-size:60px;margin-bottom:20px;">📱</div>
+  <div style="font-size:22px;font-weight:bold;margin-bottom:8px;">请在浏览器中打开</div>
+  <div style="font-size:14px;color:#ffcc80;margin-bottom:24px;line-height:1.8;">微信内置浏览器不支持摄像头<br>点击右上角 <span style="color:#fff;font-weight:bold;">···</span> 选择 <span style="color:#fff;font-weight:bold;">在浏览器中打开</span></div>
+  <div style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,0.08);border-radius:12px;padding:14px 22px;">
+    <span style="font-size:13px;color:#ffcc80;">游戏链接：</span>
+    <span id="wechat-url" style="font-size:13px;color:#90CAF9;word-break:break-all;">xean2333.github.io/geshui/</span>
+  </div>
+</div>
 <div id="container">
   <video id="video" autoplay playsinline></video>
   <canvas id="gameCanvas"></canvas>
@@ -162,6 +172,24 @@ body {
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 
 <script>
+// ============================================================
+// 微信浏览器检测 - 提示用户跳转外部浏览器
+// ============================================================
+(function() {
+  const ua = navigator.userAgent.toLowerCase();
+  const isWeChat = ua.indexOf('micromessenger') !== -1;
+  if (isWeChat) {
+    const tip = document.getElementById('wechat-tip');
+    tip.style.display = 'flex';
+    // 阻止背后页面交互
+    document.getElementById('container').style.pointerEvents = 'none';
+    document.getElementById('wechat-url').textContent = location.href.replace(/^https?:\/\//,'');
+    return; // 微信内不加载游戏
+  }
+  // 非微信浏览器，正常启动
+  window._startGame();
+})();
+
 // ============================================================
 // 常量
 // ============================================================
@@ -1411,13 +1439,12 @@ function gameLoop(ts) {
 }
 
 // 启动
-async function main() {
+window._startGame = async function() {
   const ok = await initCamera();
   if (!ok) return;
   await initHands();
   requestAnimationFrame(gameLoop);
-}
-main();
+};
 </script>
 </body>
 </html>
