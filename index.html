@@ -157,6 +157,7 @@ body {
   <div id="loading-overlay">
     <div class="loader" id="loader-spinner"></div>
     <div id="loader-text">磨 刀 中 ...</div>
+    <div id="loader-debug" style="font-size:11px;color:rgba(255,255,255,0.5);margin-top:4px;text-align:center;">等待初始化...</div>
     <div id="loader-error" style="display:none;margin-top:16px;text-align:center;">
       <div style="color:#ff6666;font-size:13px;margin-bottom:12px;">⚠️ 资源加载超时，请检查网络后重试</div>
       <button onclick="location.reload()" style="background:rgba(255,112,67,0.4);color:#fff;border:1px solid rgba(255,112,67,0.5);padding:10px 32px;border-radius:20px;font-size:14px;cursor:pointer;letter-spacing:1px;">🔄 重新加载</button>
@@ -1534,6 +1535,20 @@ function gameLoop(ts) {
 
 // 启动
 window._startGame = async function() {
+  const debug = document.getElementById('loader-debug');
+  const setStatus = (msg) => { debug.textContent = msg; console.log('[Game]', msg); };
+  
+  // 检测摄像头支持
+  setStatus('检测摄像头权限...');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setStatus('❌ 浏览器不支持摄像头');
+    document.getElementById('loader-spinner').style.display = 'none';
+    document.getElementById('loader-text').textContent = '摄像头不可用';
+    document.getElementById('loader-error').style.display = 'block';
+    loadingOverlay.style.display = 'flex';
+    return;
+  }
+
   // 加载超时检测（15秒）
   const LOAD_TIMEOUT = 15000;
   let timedOut = false;
@@ -1546,30 +1561,39 @@ window._startGame = async function() {
   }, LOAD_TIMEOUT);
 
   // 等待 MediaPipe 库加载
-  document.getElementById('loader-text').textContent = '加载手势库...';
+  setStatus('加载 MediaPipe JS 库...');
   const mpLoaded = await window.mpReadyPromise;
   if (timedOut) return;
   
   if (!mpLoaded || !window._mpReady) {
     clearTimeout(timeoutId);
+    setStatus('❌ MediaPipe 库加载失败');
     document.getElementById('loader-spinner').style.display = 'none';
     document.getElementById('loader-text').textContent = '资源加载失败';
     document.getElementById('loader-error').style.display = 'block';
     return;
   }
 
+  setStatus('✅ 库就绪，请求摄像头...');
   document.getElementById('loader-text').textContent = '初始化摄像头...';
   const ok = await initCamera();
-  if (!ok) { clearTimeout(timeoutId); return; }
+  if (!ok) { 
+    clearTimeout(timeoutId);
+    setStatus('❌ 摄像头被拒绝或不可用');
+    return; 
+  }
   
+  setStatus('✅ 摄像头就绪，加载 AI 模型...');
   try {
     await initHands();
     clearTimeout(timeoutId);
     if (!timedOut) {
+      setStatus('✅ 全部就绪!');
       requestAnimationFrame(gameLoop);
     }
   } catch (e) {
     clearTimeout(timeoutId);
+    setStatus('❌ AI 模型加载失败: ' + e.message);
     console.error('MediaPipe 初始化失败:', e);
     loadingOverlay.classList.add('hidden');
     document.getElementById('loader-error').style.display = 'block';
