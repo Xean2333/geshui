@@ -155,8 +155,12 @@ body {
   </div>
 
   <div id="loading-overlay">
-    <div class="loader"></div>
-    <div>磨 刀 中 ...</div>
+    <div class="loader" id="loader-spinner"></div>
+    <div id="loader-text">磨 刀 中 ...</div>
+    <div id="loader-error" style="display:none;margin-top:16px;text-align:center;">
+      <div style="color:#ff6666;font-size:13px;margin-bottom:12px;">⚠️ 资源加载超时，请检查网络后重试</div>
+      <button onclick="location.reload()" style="background:rgba(255,112,67,0.4);color:#fff;border:1px solid rgba(255,112,67,0.5);padding:10px 32px;border-radius:20px;font-size:14px;cursor:pointer;letter-spacing:1px;">🔄 重新加载</button>
+    </div>
   </div>
   <div id="no-camera-msg">⚠️ 无法访问摄像头</div>
 
@@ -166,10 +170,55 @@ body {
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script>
+// ===== CDN 多源回退加载器 =====
+const CDN_SOURCES = [
+  'https://unpkg.com/@mediapipe/',
+  'https://cdn.jsdelivr.net/npm/@mediapipe/',
+];
+const MP_SCRIPTS = [
+  'camera_utils/camera_utils.js',
+  'control_utils/control_utils.js',  
+  'drawing_utils/drawing_utils.js',
+  'hands/hands.js',
+];
+let currentCdnIndex = -1;
+window._mpReady = false;
+window._mpResolve = null;
+window.mpReadyPromise = new Promise(r => { window._mpResolve = r; });
+
+async function _loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.crossOrigin = 'anonymous';
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('script load failed'));
+    document.head.appendChild(s);
+  });
+}
+
+async function _loadMediaPipe(cdnIdx) {
+  if (cdnIdx >= CDN_SOURCES.length) {
+    window._mpResolve(false);
+    return;
+  }
+  const base = CDN_SOURCES[cdnIdx];
+  try {
+    for (const f of MP_SCRIPTS) {
+      await _loadScript(base + f);
+    }
+    currentCdnIndex = cdnIdx;
+    window._mpCdns = CDN_SOURCES;
+    window._mpCdnIdx = cdnIdx;
+    window._mpReady = true;
+    window._mpResolve(true);
+  } catch (e) {
+    console.warn('CDN ' + base + ' 加载失败，尝试回退...');
+    await _loadMediaPipe(cdnIdx + 1);
+  }
+}
+_loadMediaPipe(0);
+</script>
 
 <script>
 // ============================================================
@@ -1434,28 +1483,52 @@ async function initCamera() {
 
 // MediaPipe Hands
 async function initHands() {
-  const hands = new Hands({
-    locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
-  });
-  hands.setOptions({
-    maxNumHands: 1, modelComplexity: 1,
-    minDetectionConfidence: 0.7, minTrackingConfidence: 0.5,
-  });
-  hands.onResults(r => {
-    if (r.multiHandLandmarks && r.multiHandLandmarks.length > 0) {
-      game.processHand({ landmarks: r.multiHandLandmarks[0] });
-    } else {
-      game.processHand(null);
+  const lt = document.getElementById('loader-text');
+  
+  // 用加载成功的 CDN 来加载 WASM 模型文件，失败则回退
+  const startIdx = (window._mpCdnIdx >= 0) ? window._mpCdnIdx : 0;
+  let hands = null;
+  let cam = null;
+  
+  for (let attempt = 0; attempt < CDN_SOURCES.length; attempt++) {
+    const cdnIdx = (startIdx + attempt) % CDN_SOURCES.length;
+    const cdnBase = CDN_SOURCES[cdnIdx];
+    try {
+      lt.textContent = '加载 AI 模型...';
+      hands = new Hands({
+        locateFile: (f) => cdnBase + 'hands/' + f
+      });
+      hands.setOptions({
+        maxNumHands: 1, modelComplexity: 1,
+        minDetectionConfidence: 0.7, minTrackingConfidence: 0.5,
+      });
+      hands.onResults(r => {
+        if (r.multiHandLandmarks && r.multiHandLandmarks.length > 0) {
+          game.processHand({ landmarks: r.multiHandLandmarks[0] });
+        } else {
+          game.processHand(null);
+        }
+      });
+      cam = new Camera(video, {
+        onFrame: async () => { await hands.send({ image: video }); },
+        width: 640, height: 480,
+      });
+      lt.textContent = '启动摄像头...';
+      await cam.start();
+      
+      loadingOverlay.classList.add('hidden');
+      statusDot.classList.add('active');
+      statusText.textContent = '已就绪 · 请选择模式';
+      return; // 成功
+    } catch (e) {
+      console.warn('WASM CDN ' + cdnBase + ' 失败:', e.message);
+      if (attempt < CDN_SOURCES.length - 1) {
+        lt.textContent = '切换线路...';
+      }
     }
-  });
-  const cam = new Camera(video, {
-    onFrame: async () => { await hands.send({ image: video }); },
-    width: 640, height: 480,
-  });
-  await cam.start();
-  loadingOverlay.classList.add('hidden');
-  statusDot.classList.add('active');
-  statusText.textContent = '已就绪 · 请选择模式';
+  }
+  // 所有 CDN 都失败
+  throw new Error('所有 CDN 源都无法加载 AI 模型');
 }
 
 // 主循环
@@ -1478,10 +1551,47 @@ function gameLoop(ts) {
 
 // 启动
 window._startGame = async function() {
+  // 加载超时检测（15秒）
+  const LOAD_TIMEOUT = 15000;
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    document.getElementById('loader-spinner').style.display = 'none';
+    document.getElementById('loader-text').textContent = '加载超时';
+    document.getElementById('loader-error').style.display = 'block';
+    loadingOverlay.style.display = 'flex';
+  }, LOAD_TIMEOUT);
+
+  // 等待 MediaPipe 库加载
+  document.getElementById('loader-text').textContent = '加载手势库...';
+  const mpLoaded = await window.mpReadyPromise;
+  if (timedOut) return;
+  
+  if (!mpLoaded || !window._mpReady) {
+    clearTimeout(timeoutId);
+    document.getElementById('loader-spinner').style.display = 'none';
+    document.getElementById('loader-text').textContent = '资源加载失败';
+    document.getElementById('loader-error').style.display = 'block';
+    return;
+  }
+
+  document.getElementById('loader-text').textContent = '初始化摄像头...';
   const ok = await initCamera();
-  if (!ok) return;
-  await initHands();
-  requestAnimationFrame(gameLoop);
+  if (!ok) { clearTimeout(timeoutId); return; }
+  
+  try {
+    await initHands();
+    clearTimeout(timeoutId);
+    if (!timedOut) {
+      requestAnimationFrame(gameLoop);
+    }
+  } catch (e) {
+    clearTimeout(timeoutId);
+    console.error('MediaPipe 初始化失败:', e);
+    loadingOverlay.classList.add('hidden');
+    document.getElementById('loader-error').style.display = 'block';
+    loadingOverlay.style.display = 'flex';
+  }
 };
 </script>
 </body>
