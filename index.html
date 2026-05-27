@@ -101,6 +101,17 @@ body {
   <!-- 返回首页按钮（游戏中可见） -->
   <button id="btn-home" title="返回首页">🏠 返回</button>
 
+  <!-- 诊断信息 -->
+  <div id="diag-panel" style="display:none;position:absolute;top:14px;right:14px;z-index:40;
+    background:rgba(0,0,0,0.7);color:#0f0;font:10px monospace;padding:8px 12px;border-radius:6px;
+    border:1px solid rgba(0,255,0,0.2);line-height:1.6;max-width:200px;pointer-events:none;">
+    <div>v18-diag</div>
+    <div id="diag-hand">手: --</div>
+    <div id="diag-mode">模式: --</div>
+    <div id="diag-fruits">水果: --</div>
+    <div id="diag-speed">速度: --</div>
+  </div>
+
   <!-- 主菜单 -->
   <div class="overlay show" id="menu-screen">
     <div class="overlay-bg"></div>
@@ -1194,6 +1205,12 @@ class FruitNinjaGame {
     const tx2 = (1 - mTip.x) * this.w;
     const ty2 = mTip.y * this.h;
 
+    // 防御：如果坐标是 NaN，放弃本次数据
+    if (isNaN(tx) || isNaN(ty) || isNaN(tx2) || isNaN(ty2)) {
+      console.warn('[processHand] 无效坐标', {tx, ty, tx2, ty2, iTip, mTip});
+      return;
+    }
+
     const now = performance.now();
     const dt  = this._lastHandTime ? Math.min(0.1, (now - this._lastHandTime) / 1000) : 0.033;
     this._lastHandTime = now;
@@ -1201,7 +1218,7 @@ class FruitNinjaGame {
     const dist = Math.sqrt((tx - this.fingertipX) ** 2 + (ty - this.fingertipY) ** 2);
     this.tipSpeed = dist / Math.max(dt, 0.001);
 
-    // 保存上一帧位置（用于轨迹绘制和碰撞线段）
+    // 保存上一帧位置
     this.prevTipX = this.fingertipX;
     this.prevTipY = this.fingertipY;
     this.prevTipX2 = this.fingertipX2 || tx2;
@@ -1214,7 +1231,7 @@ class FruitNinjaGame {
     this.hasHand = true;
     this._newHandFrame = true; // 标记本帧有新手势数据
 
-    // 往轨迹里加点（用于刀光绘制）
+    // 往轨迹里加点
     this.slashTrail.addPoint(tx, ty, this.tipSpeed);
   }
 
@@ -1634,6 +1651,18 @@ const game = new FruitNinjaGame(gameCanvas);
 let frameCount = 0, lastFpsTime = performance.now(), fps = 0;
 
 const btnHome = document.getElementById('btn-home');
+const diagPanel = document.getElementById('diag-panel');
+const diagHand = document.getElementById('diag-hand');
+const diagMode = document.getElementById('diag-mode');
+const diagFruits = document.getElementById('diag-fruits');
+const diagSpeed = document.getElementById('diag-speed');
+
+// 双击画布左上角区域切换诊断面板
+gameCanvas.addEventListener('dblclick', (e) => {
+  if (e.clientX < 150 && e.clientY < 80) {
+    diagPanel.style.display = diagPanel.style.display === 'none' ? 'block' : 'none';
+  }
+});
 
 // ============================================================
 // 返回首页按钮
@@ -1768,18 +1797,37 @@ async function initHands() {
 function gameLoop(ts) {
   requestAnimationFrame(gameLoop);
 
-  frameCount++;
-  if (ts - lastFpsTime >= 1000) {
-    fps = Math.round(frameCount / ((ts - lastFpsTime) / 1000));
-    frameCount = 0; lastFpsTime = ts;
-    fpsDisplay.textContent = `FPS ${fps}`;
+  try {
+    frameCount++;
+    if (ts - lastFpsTime >= 1000) {
+      fps = Math.round(frameCount / ((ts - lastFpsTime) / 1000));
+      frameCount = 0; lastFpsTime = ts;
+      fpsDisplay.textContent = `FPS ${fps}`;
+    }
+
+    const dt = Math.min(0.05, (ts - (gameLoop.lt || ts)) / 1000);
+    gameLoop.lt = ts;
+
+    game.update(dt);
+    game.draw();
+
+    // 状态栏诊断：显示手势检测状态
+    if (game.hasHand) {
+      statusText.textContent = game.mode === GameMode.MENU ? '检测到手！选择模式开始' : `✋ 手势追踪中 | 速度:${Math.round(game.tipSpeed)}`;
+    }
+    
+    // 诊断面板更新
+    if (diagPanel.style.display !== 'none') {
+      diagHand.textContent = `手: ${game.hasHand ? '✓ (x' + Math.round(game.fingertipX) + ',' + Math.round(game.fingertipY) + ')' : '✗'}`;
+      diagMode.textContent = `模式: ${game.mode} | paused:${game.stagePaused} | over:${game.gameOver}`;
+      diagFruits.textContent = `水果: ${game.fruits.length} 活跃 | 半片: ${game.halves.length}`;
+      diagSpeed.textContent = `速度: ${Math.round(game.tipSpeed)}px/s | 帧: ${fps}fps`;
+    }
+  } catch(e) {
+    console.error('[GameLoop] 崩溃:', e.message, e.stack);
+    statusText.textContent = '⚠️ 游戏出错: ' + e.message.slice(0,40);
+    // 不终止循环，让游戏尝试恢复
   }
-
-  const dt = Math.min(0.05, (ts - (gameLoop.lt || ts)) / 1000);
-  gameLoop.lt = ts;
-
-  game.update(dt);
-  game.draw();
 }
 
 // 启动
