@@ -1338,12 +1338,14 @@ class FruitNinjaGame {
           if (this.stageFruitsSpawned >= cfg.fruitTotal) this.stageAllSpawned = true;
         }
       }
-      // 通关判定: 所有水果生成完 + 当前无活跃水果 + 分数达标
-      if (this.stageAllSpawned && this.fruits.length === 0 && !this._passedHandled) {
+      // 通关判定（已修复：分数达标立即过关，不等未切水果掉落）
+      if (this.stageAllSpawned && !this._passedHandled) {
         if (this.stageScore >= cfg.targetScore) {
+          // 分数达标→立即通关！不需要等水果掉完
           this._passedHandled = true;
           this._passStage();
-        } else {
+        } else if (this.fruits.length === 0) {
+          // 所有水果出屏且分数不达标→失败
           this._passedHandled = true;
           this._failStage(`分数不足！${this.stageScore} / ${cfg.targetScore}`);
         }
