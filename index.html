@@ -12,7 +12,7 @@ body {
   user-select:none; -webkit-user-select:none; touch-action:none;
 }
 #container { position:relative; width:100%; height:100%; }
-#video { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:cover; transform:scaleX(-1); opacity:0; }
+#video { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:fill; transform:scaleX(-1); opacity:0; }
 #gameCanvas { position:absolute; top:0; left:0; width:100%; height:100%; z-index:2; }
 
 /* 菜单 & 弹窗 */
@@ -105,7 +105,7 @@ body {
   <div id="diag-panel" style="display:none;position:absolute;top:14px;right:14px;z-index:40;
     background:rgba(0,0,0,0.7);color:#0f0;font:10px monospace;padding:8px 12px;border-radius:6px;
     border:1px solid rgba(0,255,0,0.2);line-height:1.6;max-width:200px;pointer-events:none;">
-    <div>v21-mobile</div>
+    <div>v22-fill</div>
     <div id="diag-hand">手: --</div>
     <div id="diag-mode">模式: --</div>
     <div id="diag-fruits">水果: --</div>
@@ -1207,38 +1207,16 @@ class FruitNinjaGame {
     const iTip = lm[LM.INDEX_TIP];
     const mTip = lm[LM.MIDDLE_TIP];
 
-    // ★★★ v21 核心修复：object-fit:cover 坐标映射 ★★★
-    // 原来的 `(1 - iTip.x) * this.w` 直接乘屏幕尺寸，
-    // 但视频 4:3 与手机屏幕 ~9:16 比例差距大，object-fit:cover 会大量裁剪。
-    // 必须计算视频在 cover 模式下的实际渲染区域，才能正确映射手势坐标。
-    const vw = this._videoWidth  || 640;
-    const vh = this._videoHeight || 480;
-    const sw = this.w; // Canvas/屏幕宽度
-    const sh = this.h; // Canvas/屏幕高度
-
-    // cover 模式：视频等比缩放到覆盖整个容器
-    const scale = Math.max(sw / vw, sh / vh);
-    const drawW = vw * scale; // 视频缩放后的渲染宽度
-    const drawH = vh * scale; // 视频缩放后的渲染高度
-    const offsetX = (sw - drawW) / 2; // 水平裁剪偏移（正=居中，负=溢出）
-    const offsetY = (sh - drawH) / 2; // 垂直裁剪偏移
-
-    // 归一化坐标(0~1) → 屏幕实际像素坐标
-    // (1 - x) 是因为视频做了 CSS scaleX(-1) 镜像
-    const tx  = (1 - iTip.x) * drawW + offsetX;
-    const ty  = iTip.y * drawH + offsetY;
-    const tx2 = (1 - mTip.x) * drawW + offsetX;
-    const ty2 = mTip.y * drawH + offsetY;
-
-    // 边界钳制：防止裁剪后坐标超出屏幕范围
-    const cx  = Math.max(0, Math.min(this.w, tx));
-    const cy  = Math.max(0, Math.min(this.h, ty));
-    const cx2 = Math.max(0, Math.min(this.w, tx2));
-    const cy2 = Math.max(0, Math.min(this.h, ty2));
+    // ★ v22: 坐标映射 — 视频使用 object-fit:fill 填满屏幕
+    // 归一化坐标(0~1) 直接映射到屏幕像素，1:1 对齐
+    const tx  = (1 - iTip.x) * this.w;
+    const ty  = iTip.y * this.h;
+    const tx2 = (1 - mTip.x) * this.w;
+    const ty2 = mTip.y * this.h;
 
     // 防御：如果坐标是 NaN，放弃本次数据
-    if (isNaN(cx) || isNaN(cy) || isNaN(cx2) || isNaN(cy2)) {
-      console.warn('[processHand] 无效坐标', {cx, cy, cx2, cy2, iTip, mTip});
+    if (isNaN(tx) || isNaN(ty) || isNaN(tx2) || isNaN(ty2)) {
+      console.warn('[processHand] 无效坐标', {tx, ty, tx2, ty2, iTip, mTip});
       return;
     }
 
@@ -1246,26 +1224,24 @@ class FruitNinjaGame {
     const dt  = this._lastHandTime ? Math.min(0.1, (now - this._lastHandTime) / 1000) : 0.033;
     this._lastHandTime = now;
 
-    // 速度计算使用钳制后的坐标
-    const dist = Math.sqrt((cx - this.fingertipX) ** 2 + (cy - this.fingertipY) ** 2);
+    const dist = Math.sqrt((tx - this.fingertipX) ** 2 + (ty - this.fingertipY) ** 2);
     this.tipSpeed = dist / Math.max(dt, 0.001);
 
-    // 保存上一帧位置（上一帧已经钳制过）
+    // 保存上一帧位置
     this.prevTipX = this.fingertipX;
     this.prevTipY = this.fingertipY;
-    this.prevTipX2 = this.fingertipX2 || cx2;
-    this.prevTipY2 = this.fingertipY2 || cy2;
+    this.prevTipX2 = this.fingertipX2 || tx2;
+    this.prevTipY2 = this.fingertipY2 || ty2;
 
-    // 存储钳制后的屏幕坐标
-    this.fingertipX  = cx;
-    this.fingertipY  = cy;
-    this.fingertipX2 = cx2;
-    this.fingertipY2 = cy2;
+    this.fingertipX  = tx;
+    this.fingertipY  = ty;
+    this.fingertipX2 = tx2;
+    this.fingertipY2 = ty2;
     this.hasHand = true;
     this._lastHandDataTime = now; // ★ 记录有效手势数据的最后时间戳
 
-    // 往轨迹里加点（使用钳制后的坐标）
-    this.slashTrail.addPoint(cx, cy, this.tipSpeed);
+    // 往轨迹里加点
+    this.slashTrail.addPoint(tx, ty, this.tipSpeed);
   }
 
   // ---------- 主更新 ----------
