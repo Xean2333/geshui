@@ -12,7 +12,7 @@ body {
   user-select:none; -webkit-user-select:none; touch-action:none;
 }
 #container { position:relative; width:100%; height:100%; }
-#video { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:fill; transform:scaleX(-1); opacity:0; }
+#video { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:fill; transform:scaleX(-1); opacity:0.001; } /* v25: opacity 0.001 而非 0，强制手机浏览器解码视频帧 */
 #gameCanvas { position:absolute; top:0; left:0; width:100%; height:100%; z-index:2; }
 
 /* 菜单 & 弹窗 */
@@ -105,7 +105,7 @@ body {
   <div id="diag-panel" style="display:none;position:absolute;top:14px;right:14px;z-index:40;
     background:rgba(0,0,0,0.7);color:#0f0;font:10px monospace;padding:8px 12px;border-radius:6px;
     border:1px solid rgba(0,255,0,0.2);line-height:1.6;max-width:200px;pointer-events:none;">
-    <div>v24-raf</div>
+    <div>v25-sendfix</div>
     <div id="diag-hand">手: --</div>
     <div id="diag-mode">模式: --</div>
     <div id="diag-fruits">水果: --</div>
@@ -113,6 +113,7 @@ body {
     <div id="diag-stale">新鲜度: --</div>
     <div id="diag-video">视频: --</div>
     <div id="diag-cb">回调: --</div>
+    <div id="diag-sent">发送: --</div>
     <div id="diag-mobile">设备: --</div>
   </div>
 
@@ -1736,6 +1737,7 @@ const diagSpeed = document.getElementById('diag-speed');
 const diagStale = document.getElementById('diag-stale');
 const diagVideo = document.getElementById('diag-video');
 const diagCb = document.getElementById('diag-cb');
+const diagSent = document.getElementById('diag-sent');
 const diagMobile = document.getElementById('diag-mobile');
 
 // ★ v23: 移动端检测
@@ -1887,20 +1889,49 @@ async function initHands() {
           game.processHand(null);
         }
       });
-      // ★★★ v24: 用 requestAnimationFrame 替代 MediaPipe Camera 类 ★★★
-      // MediaPipe 的 Camera 类内部使用 requestVideoFrameCallback，
-      // 该 API 在 iOS Safari / 部分安卓浏览器不完全支持，
-      // 导致 onFrame 回调永远不触发 → onResults 回调计数始终为 0。
-      // 改用简单的 rAF 循环直接调用 hands.send()，兼容所有浏览器。
-      lt.textContent = '启动手势追踪...';
+      // ★★★ v25: 增强版 rAF 帧循环 ★★★
+      // v24 用 rAF 替代 Camera 类，但手机端仍然回调为 0。
+      // v25 排查三个可能根因：
+      //   1. opacity:0 导致手机浏览器不解码视频帧 → 改 opacity:0.001
+      //   2. readyState>=2 守卫在部分手机上永远不通过 → 降低为 >=1
+      //   3. 并发 send() 导致 MediaPipe 拒绝处理 → 用 _sending 锁保护
+      lt.textContent = '启动手势追踪 (v25)...';
+      window._sendCount = 0;       // send() 调用次数
+      window._sendErrorCount = 0;  // send() 拒绝次数
+      window._sending = false;     // 防并发锁
+      
       const _sendFrame = () => {
-        if (video.readyState >= 2) {
-          hands.send({ image: video }).catch(() => {});
-        }
         window._frameLoopId = requestAnimationFrame(_sendFrame);
+        
+        // 每 60 帧打印一次调试信息
+        if (window._sendCount % 60 === 0 && window._sendCount > 0) {
+          console.log('[rAF] send调用:', window._sendCount, '回调:', window._onResultsCount, 
+            'readyState:', video.readyState, 'sending:', window._sending);
+        }
+        
+        // 放宽 readyState 检查：>=1 即可（HAVE_METADATA 就尝试发送）
+        if (video.readyState < 1) {
+          if (window._sendCount === 0) console.log('[rAF] 等待视频就绪, readyState:', video.readyState);
+          return;
+        }
+        
+        // 防并发：MediaPipe 一次只能处理一帧
+        if (window._sending) return;
+        
+        window._sending = true;
+        window._sendCount++;
+        
+        hands.send({ image: video })
+          .catch((err) => {
+            window._sendErrorCount++;
+            console.warn('[hands.send] 错误 #' + window._sendErrorCount + ':', err.message || err);
+          })
+          .finally(() => {
+            window._sending = false;
+          });
       };
       window._frameLoopId = requestAnimationFrame(_sendFrame);
-      console.log('[MediaPipe] rAF 帧循环已启动');
+      console.log('[MediaPipe] v25 rAF 帧循环已启动');
       
       loadingOverlay.classList.add('hidden');
       statusDot.classList.add('active');
@@ -1974,6 +2005,8 @@ function gameLoop(ts) {
       }
       // v23: onResults 回调计数
       diagCb.textContent = `回调: ${window._onResultsCount}次`;
+      // v25: send() 调用计数
+      diagSent.textContent = `发送: ${window._sendCount||0}次 | 错:${window._sendErrorCount||0}`;
     }
   } catch(e) {
     console.error('[GameLoop] 崩溃:', e.message, e.stack);
