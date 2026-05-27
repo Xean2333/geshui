@@ -1259,43 +1259,52 @@ class FruitNinjaGame {
     this.slashTrail.update(dt);
     for (const f of this.fruits) f.update(dt);
 
-    // ---- 手势碰撞检测 ----
-    // 只要有手，且手在动（prevTip 存在），就在 update 里做碰撞
-    // 不依赖速度阈值，不依赖异步回调时机
-    const hasNewGesture = this.hasHand && this._newHandFrame;
-    this._newHandFrame = false; // 消费掉标记
-
+    // ---- 手势碰撞检测（v19: 去掉 _newHandFrame 门控，每帧都检测） ----
+    // 只要检测到手，就在 update 里做碰撞检测
+    // 不依赖 MediaPipe 回调时机，不依赖速度阈值
     let slicedThisFrame = false;
-    if (hasNewGesture) {
+
+    if (this.hasHand) {
       const cx = this.fingertipX, cy = this.fingertipY;
-      const px = this.prevTipX, py = this.prevTipY;
+      const px = this.prevTipX || cx, py = this.prevTipY || cy;
       const cx2 = this.fingertipX2 || cx, cy2 = this.fingertipY2 || cy;
       const moved = Math.sqrt((cx - px) ** 2 + (cy - py) ** 2);
 
-      for (const f of this.fruits) {
-        if (!f.alive || f.sliced) continue;
-        const R = f.r + 22; // 碰撞半径 = 水果半径 + 手指粗细容错
+      // 防御：确保坐标有效
+      if (!isNaN(cx) && !isNaN(cy) && cx > 0 && cy > 0) {
+        for (const f of this.fruits) {
+          if (!f.alive || f.sliced) continue;
+          const R = f.r + 22;
 
-        // 方法1：当前帧指尖在水果内（静态重叠检测）
-        const d1 = Math.sqrt((f.x - cx) ** 2 + (f.y - cy) ** 2);
-        const d2 = Math.sqrt((f.x - cx2) ** 2 + (f.y - cy2) ** 2);
-        if (d1 < R || d2 < R) {
-          this.sliceFruit(f, px, py, cx, cy);
-          slicedThisFrame = true;
-          continue;
-        }
-
-        // 方法2：扫过检测（线段与圆相交），只要有移动就做
-        if (moved > 2) {
-          if (f.hitsLine(px, py, cx, cy)) {
+          // 方法1：当前帧指尖在水果内（静态重叠）
+          const d1 = Math.sqrt((f.x - cx) ** 2 + (f.y - cy) ** 2);
+          if (d1 < R) {
             this.sliceFruit(f, px, py, cx, cy);
             slicedThisFrame = true;
+            continue;
+          }
+          // 中指也检测
+          if (cx2 !== cx || cy2 !== cy) {
+            const d2 = Math.sqrt((f.x - cx2) ** 2 + (f.y - cy2) ** 2);
+            if (d2 < R) {
+              this.sliceFruit(f, px, py, cx2, cy2);
+              slicedThisFrame = true;
+              continue;
+            }
+          }
+
+          // 方法2：线段扫过检测（有移动才做）
+          if (moved > 2 && px > 0 && py > 0) {
+            if (f.hitsLine(px, py, cx, cy)) {
+              this.sliceFruit(f, px, py, cx, cy);
+              slicedThisFrame = true;
+            }
           }
         }
       }
     }
 
-    // 轨迹线段也做碰撞（保留原有逻辑作为第三道保险）
+    // 轨迹线段碰撞（第三道保险）
     if (!slicedThisFrame && this.slashTrail.hasTrail) {
       const segs = this.slashTrail.getSegments();
       for (const f of this.fruits) {
