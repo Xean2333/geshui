@@ -105,13 +105,15 @@ body {
   <div id="diag-panel" style="display:none;position:absolute;top:14px;right:14px;z-index:40;
     background:rgba(0,0,0,0.7);color:#0f0;font:10px monospace;padding:8px 12px;border-radius:6px;
     border:1px solid rgba(0,255,0,0.2);line-height:1.6;max-width:200px;pointer-events:none;">
-    <div>v22-fill</div>
+    <div>v23-mobile</div>
     <div id="diag-hand">手: --</div>
     <div id="diag-mode">模式: --</div>
     <div id="diag-fruits">水果: --</div>
     <div id="diag-speed">速度: --</div>
     <div id="diag-stale">新鲜度: --</div>
     <div id="diag-video">视频: --</div>
+    <div id="diag-cb">回调: --</div>
+    <div id="diag-mobile">设备: --</div>
   </div>
 
   <!-- 主菜单 -->
@@ -431,12 +433,14 @@ class Fruit {
   }
 
   hitsLine(x1, y1, x2, y2) {
+    // v23: 移动端使用更大的碰撞半径
+    const hitR = IS_MOBILE ? this.r + 14 : this.r;
     const dx = x2 - x1, dy = y2 - y1;
     const fx = x1 - this.x, fy = y1 - this.y;
     const a = dx * dx + dy * dy;
-    if (a < 0.001) return Math.sqrt(fx * fx + fy * fy) < this.r;
+    if (a < 0.001) return Math.sqrt(fx * fx + fy * fy) < hitR;
     const b = 2 * (fx * dx + fy * dy);
-    const c = fx * fx + fy * fy - this.r * this.r;
+    const c = fx * fx + fy * fy - hitR * hitR;
     let disc = b * b - 4 * a * c;
     if (disc < 0) return false;
     disc = Math.sqrt(disc);
@@ -1268,9 +1272,8 @@ class FruitNinjaGame {
     this.slashTrail.update(dt);
     for (const f of this.fruits) f.update(dt);
 
-    // ★★★ 手势数据新鲜度检测（v20: 防止 MediaPipe 回调停止导致 hasHand 卡住） ★★★
-    // 如果超过 HAND_STALE_MS 没收到新的手势数据，自动重置 hasHand
-    const HAND_STALE_MS = 300;
+    // ★★★ 手势数据新鲜度检测（v23: 移动端阈值更高，防止帧率低导致误判） ★★★
+    const HAND_STALE_MS = IS_MOBILE ? 1200 : 300;
     if (this.hasHand && this._lastHandDataTime) {
       const sinceLastData = performance.now() - this._lastHandDataTime;
       if (sinceLastData > HAND_STALE_MS) {
@@ -1295,7 +1298,8 @@ class FruitNinjaGame {
       if (!isNaN(cx) && !isNaN(cy) && cx > 0 && cy > 0) {
         for (const f of this.fruits) {
           if (!f.alive || f.sliced) continue;
-          const R = f.r + 22;
+          // v23: 移动端增大碰撞半径，弥补坐标映射微小误差
+          const R = f.r + (IS_MOBILE ? 32 : 22);
 
           // 方法1：当前帧指尖在水果内（静态重叠）
           const d1 = Math.sqrt((f.x - cx) ** 2 + (f.y - cy) ** 2);
@@ -1556,6 +1560,34 @@ class FruitNinjaGame {
       ctx.restore();
     }
 
+    // ★ v23: 移动端手部追踪可视化指示器
+    // 在手的位置画一个大半透明圆圈，让用户确认追踪正常工作
+    if (this.hasHand && IS_MOBILE) {
+      const fx = this.fingertipX, fy = this.fingertipY;
+      const pulse = 1 + Math.sin(performance.now() * 0.005) * 0.12;
+      ctx.save();
+      ctx.globalAlpha = 0.25;
+      ctx.strokeStyle = '#00ff88';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(fx, fy, 28 * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      
+      ctx.globalAlpha = 0.1;
+      ctx.fillStyle = '#00ff88';
+      ctx.beginPath();
+      ctx.arc(fx, fy, 28 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // 小实心点
+      ctx.globalAlpha = 0.7;
+      ctx.fillStyle = '#00ff88';
+      ctx.beginPath();
+      ctx.arc(fx, fy, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
     ctx.restore();
 
     // 炸弹红色闪屏
@@ -1703,6 +1735,24 @@ const diagFruits = document.getElementById('diag-fruits');
 const diagSpeed = document.getElementById('diag-speed');
 const diagStale = document.getElementById('diag-stale');
 const diagVideo = document.getElementById('diag-video');
+const diagCb = document.getElementById('diag-cb');
+const diagMobile = document.getElementById('diag-mobile');
+
+// ★ v23: 移动端检测
+const IS_MOBILE = ('ontouchstart' in window || navigator.maxTouchPoints > 0) && window.innerWidth < 768;
+window._onResultsCount = 0; // onResults 回调计数器
+diagMobile.textContent = `设备: ${IS_MOBILE ? '📱移动端' : '🖥桌面端'}`;
+
+// ★ v23: 移动端自动显示诊断面板（双击在手机上不好用）
+if (IS_MOBILE) {
+  diagPanel.style.display = 'block';
+  diagPanel.style.fontSize = '9px';
+  diagPanel.style.maxWidth = '180px';
+  diagPanel.style.padding = '6px 10px';
+  // 移到左上角，避免遮挡返回按钮
+  diagPanel.style.right = 'auto';
+  diagPanel.style.left = '60px';
+}
 
 // 双击画布左上角区域切换诊断面板
 gameCanvas.addEventListener('dblclick', (e) => {
@@ -1810,18 +1860,17 @@ async function initHands() {
       const hands = new Hands({
         locateFile: (f) => src.base + f
       });
-      // ★ v21: 移动端优化配置
-      // 检测是否为移动设备（触摸屏 + 窄屏幕）
-      const isMobile = ('ontouchstart' in window || navigator.maxTouchPoints > 0) && window.innerWidth < 768;
+      // ★ v23: 移动端优化配置（使用全局 IS_MOBILE）
       hands.setOptions({
         maxNumHands: 1,
-        modelComplexity: isMobile ? 0 : 1,           // 移动端用轻量模型
-        minDetectionConfidence: isMobile ? 0.5 : 0.7, // 移动端降低检测门槛
+        modelComplexity: IS_MOBILE ? 0 : 1,           // 移动端用轻量模型
+        minDetectionConfidence: IS_MOBILE ? 0.4 : 0.7, // 移动端进一步降低门槛
         minTrackingConfidence: 0.5,
       });
-      console.log('[MediaPipe] 模式:', isMobile ? '移动端(轻量)' : '桌面端(完整)');
+      console.log('[MediaPipe] 模式:', IS_MOBILE ? '移动端(轻量)' : '桌面端(完整)');
       hands.onResults(r => {
-        // ★ v20: 记录回调触发时间，用于健康检查
+        // ★ v23: 记录回调计数
+        window._onResultsCount++;
         window._lastOnResultsTime = performance.now();
         
         // 直接写入 game 对象的手势状态
@@ -1914,13 +1963,16 @@ function gameLoop(ts) {
       diagFruits.textContent = `水果: ${game.fruits.length} 活跃 | 半片: ${game.halves.length}`;
       diagSpeed.textContent = `速度: ${Math.round(game.tipSpeed)}px/s | 帧: ${fps}fps`;
       diagVideo.textContent = `视频: ${game._videoWidth}x${game._videoHeight} | 屏幕: ${game.w}x${game.h}`;
-      // v20: 新鲜度显示
+      // v23: 新鲜度显示 + 移动端阈值提示
       if (game._lastHandDataTime) {
         const stale = Math.round(performance.now() - game._lastHandDataTime);
-        diagStale.textContent = `新鲜度: ${stale}ms` + (stale > 300 ? ' ⚠' : '');
+        const thresh = IS_MOBILE ? 1200 : 300;
+        diagStale.textContent = `新鲜度: ${stale}ms` + (stale > thresh ? ' ⚠' : '');
       } else {
         diagStale.textContent = '新鲜度: --';
       }
+      // v23: onResults 回调计数
+      diagCb.textContent = `回调: ${window._onResultsCount}次`;
     }
   } catch(e) {
     console.error('[GameLoop] 崩溃:', e.message, e.stack);
