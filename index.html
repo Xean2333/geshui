@@ -105,11 +105,12 @@ body {
   <div id="diag-panel" style="display:none;position:absolute;top:14px;right:14px;z-index:40;
     background:rgba(0,0,0,0.7);color:#0f0;font:10px monospace;padding:8px 12px;border-radius:6px;
     border:1px solid rgba(0,255,0,0.2);line-height:1.6;max-width:200px;pointer-events:none;">
-    <div>v18-diag</div>
+    <div>v20-stable</div>
     <div id="diag-hand">手: --</div>
     <div id="diag-mode">模式: --</div>
     <div id="diag-fruits">水果: --</div>
     <div id="diag-speed">速度: --</div>
+    <div id="diag-stale">新鲜度: --</div>
   </div>
 
   <!-- 主菜单 -->
@@ -962,6 +963,7 @@ class FruitNinjaGame {
     this.fingertipX = 0; this.fingertipY = 0;
     this.prevTipX = 0; this.prevTipY = 0;
     this.tipSpeed = 0; this.hasHand = false;
+    this._lastHandDataTime = 0;  // v20: 最后收到手势数据的时间戳
     this.knifeAngle = -Math.PI / 4; // 刀的角度
     this._comboFrames = 0;
 
@@ -1193,10 +1195,11 @@ class FruitNinjaGame {
   processHand(handData) {
     if (!handData) {
       this.hasHand = false;
+      this._lastHandDataTime = 0; // 重置时间戳
       return;
     }
     const lm = handData.landmarks;
-    if (!lm || lm.length < 21) { this.hasHand = false; return; }
+    if (!lm || lm.length < 21) { this.hasHand = false; this._lastHandDataTime = 0; return; }
 
     const iTip = lm[LM.INDEX_TIP];
     const mTip = lm[LM.MIDDLE_TIP];
@@ -1229,7 +1232,7 @@ class FruitNinjaGame {
     this.fingertipX2 = tx2;
     this.fingertipY2 = ty2;
     this.hasHand = true;
-    this._newHandFrame = true; // 标记本帧有新手势数据
+    this._lastHandDataTime = now; // ★ 记录有效手势数据的最后时间戳
 
     // 往轨迹里加点
     this.slashTrail.addPoint(tx, ty, this.tipSpeed);
@@ -1259,9 +1262,21 @@ class FruitNinjaGame {
     this.slashTrail.update(dt);
     for (const f of this.fruits) f.update(dt);
 
-    // ---- 手势碰撞检测（v19: 去掉 _newHandFrame 门控，每帧都检测） ----
-    // 只要检测到手，就在 update 里做碰撞检测
-    // 不依赖 MediaPipe 回调时机，不依赖速度阈值
+    // ★★★ 手势数据新鲜度检测（v20: 防止 MediaPipe 回调停止导致 hasHand 卡住） ★★★
+    // 如果超过 HAND_STALE_MS 没收到新的手势数据，自动重置 hasHand
+    const HAND_STALE_MS = 300;
+    if (this.hasHand && this._lastHandDataTime) {
+      const sinceLastData = performance.now() - this._lastHandDataTime;
+      if (sinceLastData > HAND_STALE_MS) {
+        this.hasHand = false;
+        if (window._handDetected) {
+          window._handDetected = false;
+          document.getElementById('status-dot').classList.remove('active');
+        }
+      }
+    }
+
+    // ---- 手势碰撞检测（v20: 新鲜度保护 + 每帧检测） ----
     let slicedThisFrame = false;
 
     if (this.hasHand) {
@@ -1638,6 +1653,21 @@ class FruitNinjaGame {
       ctx.fillText('伸出手指，开始切水果吧！', this.w / 2, this.h * 0.65);
     }
 
+    // ★ v20: 追踪中断警告（手之前在线，但现在中断）
+    if (!this.hasHand && this._lastHandDataTime && this.mode !== GameMode.MENU && !this.gameOver) {
+      const sinceLost = performance.now() - this._lastHandDataTime;
+      if (sinceLost > 500 && sinceLost < 4000) {
+        const warnAlpha = Math.min(0.6, (sinceLost - 500) / 1500 * 0.6);
+        ctx.fillStyle = `rgba(255,150,30,${warnAlpha})`;
+        ctx.font = 'bold 14px "PingFang SC","Microsoft YaHei",sans-serif';
+        ctx.textAlign = 'center';
+        const pulse = 1 + Math.sin(sinceLost * 0.01) * 0.08;
+        ctx.save(); ctx.translate(this.w / 2, this.h * 0.72); ctx.scale(pulse, pulse);
+        ctx.fillText('⚠ 追踪中断，请重新伸出手', 0, 0);
+        ctx.restore();
+      }
+    }
+
     ctx.fillStyle = 'rgba(255,255,255,0.15)';
     ctx.font = '10px "PingFang SC","Microsoft YaHei",sans-serif';
     ctx.textAlign = 'right';
@@ -1665,6 +1695,7 @@ const diagHand = document.getElementById('diag-hand');
 const diagMode = document.getElementById('diag-mode');
 const diagFruits = document.getElementById('diag-fruits');
 const diagSpeed = document.getElementById('diag-speed');
+const diagStale = document.getElementById('diag-stale');
 
 // 双击画布左上角区域切换诊断面板
 gameCanvas.addEventListener('dblclick', (e) => {
@@ -1770,6 +1801,9 @@ async function initHands() {
         minDetectionConfidence: 0.7, minTrackingConfidence: 0.5,
       });
       hands.onResults(r => {
+        // ★ v20: 记录回调触发时间，用于健康检查
+        window._lastOnResultsTime = performance.now();
+        
         // 直接写入 game 对象的手势状态
         // 这里不做任何碰撞检测，只记录位置，gameLoop 会在 update() 里处理
         if (r.multiHandLandmarks && r.multiHandLandmarks.length > 0) {
@@ -1785,7 +1819,14 @@ async function initHands() {
         }
       });
       const cam = new Camera(video, {
-        onFrame: async () => { await hands.send({ image: video }); },
+        onFrame: async () => {
+          try {
+            await hands.send({ image: video });
+          } catch (e) {
+            // ★ v20: Camera 帧处理出错时不崩溃，静默跳过
+            console.warn('[Camera] 帧处理异常:', e.message);
+          }
+        },
         width: 640, height: 480,
       });
       lt.textContent = '启动摄像头...';
@@ -1820,9 +1861,30 @@ function gameLoop(ts) {
     game.update(dt);
     game.draw();
 
+    // ★ v20: MediaPipe 回调健康检查
+    // 如果 onResults 超过 2 秒未触发，说明管线可能冻结
+    // 此时强制重置手势状态并给出视觉提示
+    if (window._lastOnResultsTime) {
+      const sinceLastResult = performance.now() - window._lastOnResultsTime;
+      if (sinceLastResult > 2000) {
+        // 回调停止超过 2 秒 → 强制重置
+        if (game.hasHand) {
+          game.hasHand = false;
+          game._lastHandDataTime = 0;
+        }
+        if (window._handDetected) {
+          window._handDetected = false;
+          document.getElementById('status-dot').classList.remove('active');
+        }
+        statusText.textContent = '⚠️ 追踪中断，尝试恢复...';
+      }
+    }
+
     // 状态栏诊断：显示手势检测状态
     if (game.hasHand) {
       statusText.textContent = game.mode === GameMode.MENU ? '检测到手！选择模式开始' : `✋ 手势追踪中 | 速度:${Math.round(game.tipSpeed)}`;
+    } else if (window._lastOnResultsTime && (performance.now() - window._lastOnResultsTime) > 2000) {
+      statusText.textContent = '⚠️ 追踪已中断';
     }
     
     // 诊断面板更新
@@ -1831,6 +1893,13 @@ function gameLoop(ts) {
       diagMode.textContent = `模式: ${game.mode} | paused:${game.stagePaused} | over:${game.gameOver}`;
       diagFruits.textContent = `水果: ${game.fruits.length} 活跃 | 半片: ${game.halves.length}`;
       diagSpeed.textContent = `速度: ${Math.round(game.tipSpeed)}px/s | 帧: ${fps}fps`;
+      // v20: 新鲜度显示
+      if (game._lastHandDataTime) {
+        const stale = Math.round(performance.now() - game._lastHandDataTime);
+        diagStale.textContent = `新鲜度: ${stale}ms` + (stale > 300 ? ' ⚠' : '');
+      } else {
+        diagStale.textContent = '新鲜度: --';
+      }
     }
   } catch(e) {
     console.error('[GameLoop] 崩溃:', e.message, e.stack);
