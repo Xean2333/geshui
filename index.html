@@ -105,12 +105,13 @@ body {
   <div id="diag-panel" style="display:none;position:absolute;top:14px;right:14px;z-index:40;
     background:rgba(0,0,0,0.7);color:#0f0;font:10px monospace;padding:8px 12px;border-radius:6px;
     border:1px solid rgba(0,255,0,0.2);line-height:1.6;max-width:200px;pointer-events:none;">
-    <div>v20-stable</div>
+    <div>v21-mobile</div>
     <div id="diag-hand">手: --</div>
     <div id="diag-mode">模式: --</div>
     <div id="diag-fruits">水果: --</div>
     <div id="diag-speed">速度: --</div>
     <div id="diag-stale">新鲜度: --</div>
+    <div id="diag-video">视频: --</div>
   </div>
 
   <!-- 主菜单 -->
@@ -966,6 +967,8 @@ class FruitNinjaGame {
     this._lastHandDataTime = 0;  // v20: 最后收到手势数据的时间戳
     this.knifeAngle = -Math.PI / 4; // 刀的角度
     this._comboFrames = 0;
+    this._videoWidth = 640;  // v21: 视频实际分辨率，启动时更新
+    this._videoHeight = 480;
 
     this.resize();
     window.addEventListener('resize', () => this.resize());
@@ -1203,14 +1206,39 @@ class FruitNinjaGame {
 
     const iTip = lm[LM.INDEX_TIP];
     const mTip = lm[LM.MIDDLE_TIP];
-    const tx  = (1 - iTip.x) * this.w;
-    const ty  = iTip.y * this.h;
-    const tx2 = (1 - mTip.x) * this.w;
-    const ty2 = mTip.y * this.h;
+
+    // ★★★ v21 核心修复：object-fit:cover 坐标映射 ★★★
+    // 原来的 `(1 - iTip.x) * this.w` 直接乘屏幕尺寸，
+    // 但视频 4:3 与手机屏幕 ~9:16 比例差距大，object-fit:cover 会大量裁剪。
+    // 必须计算视频在 cover 模式下的实际渲染区域，才能正确映射手势坐标。
+    const vw = this._videoWidth  || 640;
+    const vh = this._videoHeight || 480;
+    const sw = this.w; // Canvas/屏幕宽度
+    const sh = this.h; // Canvas/屏幕高度
+
+    // cover 模式：视频等比缩放到覆盖整个容器
+    const scale = Math.max(sw / vw, sh / vh);
+    const drawW = vw * scale; // 视频缩放后的渲染宽度
+    const drawH = vh * scale; // 视频缩放后的渲染高度
+    const offsetX = (sw - drawW) / 2; // 水平裁剪偏移（正=居中，负=溢出）
+    const offsetY = (sh - drawH) / 2; // 垂直裁剪偏移
+
+    // 归一化坐标(0~1) → 屏幕实际像素坐标
+    // (1 - x) 是因为视频做了 CSS scaleX(-1) 镜像
+    const tx  = (1 - iTip.x) * drawW + offsetX;
+    const ty  = iTip.y * drawH + offsetY;
+    const tx2 = (1 - mTip.x) * drawW + offsetX;
+    const ty2 = mTip.y * drawH + offsetY;
+
+    // 边界钳制：防止裁剪后坐标超出屏幕范围
+    const cx  = Math.max(0, Math.min(this.w, tx));
+    const cy  = Math.max(0, Math.min(this.h, ty));
+    const cx2 = Math.max(0, Math.min(this.w, tx2));
+    const cy2 = Math.max(0, Math.min(this.h, ty2));
 
     // 防御：如果坐标是 NaN，放弃本次数据
-    if (isNaN(tx) || isNaN(ty) || isNaN(tx2) || isNaN(ty2)) {
-      console.warn('[processHand] 无效坐标', {tx, ty, tx2, ty2, iTip, mTip});
+    if (isNaN(cx) || isNaN(cy) || isNaN(cx2) || isNaN(cy2)) {
+      console.warn('[processHand] 无效坐标', {cx, cy, cx2, cy2, iTip, mTip});
       return;
     }
 
@@ -1218,24 +1246,26 @@ class FruitNinjaGame {
     const dt  = this._lastHandTime ? Math.min(0.1, (now - this._lastHandTime) / 1000) : 0.033;
     this._lastHandTime = now;
 
-    const dist = Math.sqrt((tx - this.fingertipX) ** 2 + (ty - this.fingertipY) ** 2);
+    // 速度计算使用钳制后的坐标
+    const dist = Math.sqrt((cx - this.fingertipX) ** 2 + (cy - this.fingertipY) ** 2);
     this.tipSpeed = dist / Math.max(dt, 0.001);
 
-    // 保存上一帧位置
+    // 保存上一帧位置（上一帧已经钳制过）
     this.prevTipX = this.fingertipX;
     this.prevTipY = this.fingertipY;
-    this.prevTipX2 = this.fingertipX2 || tx2;
-    this.prevTipY2 = this.fingertipY2 || ty2;
+    this.prevTipX2 = this.fingertipX2 || cx2;
+    this.prevTipY2 = this.fingertipY2 || cy2;
 
-    this.fingertipX  = tx;
-    this.fingertipY  = ty;
-    this.fingertipX2 = tx2;
-    this.fingertipY2 = ty2;
+    // 存储钳制后的屏幕坐标
+    this.fingertipX  = cx;
+    this.fingertipY  = cy;
+    this.fingertipX2 = cx2;
+    this.fingertipY2 = cy2;
     this.hasHand = true;
     this._lastHandDataTime = now; // ★ 记录有效手势数据的最后时间戳
 
-    // 往轨迹里加点
-    this.slashTrail.addPoint(tx, ty, this.tipSpeed);
+    // 往轨迹里加点（使用钳制后的坐标）
+    this.slashTrail.addPoint(cx, cy, this.tipSpeed);
   }
 
   // ---------- 主更新 ----------
@@ -1696,6 +1726,7 @@ const diagMode = document.getElementById('diag-mode');
 const diagFruits = document.getElementById('diag-fruits');
 const diagSpeed = document.getElementById('diag-speed');
 const diagStale = document.getElementById('diag-stale');
+const diagVideo = document.getElementById('diag-video');
 
 // 双击画布左上角区域切换诊断面板
 gameCanvas.addEventListener('dblclick', (e) => {
@@ -1772,6 +1803,13 @@ async function initCamera() {
     });
     video.srcObject = stream;
     await video.play();
+
+    // ★ v21: 记录视频实际分辨率（移动端可能不是 640x480）
+    // video.videoWidth/videoHeight 在 play() 后才可用
+    game._videoWidth  = video.videoWidth  || 640;
+    game._videoHeight = video.videoHeight || 480;
+    console.log('[Camera] 视频实际分辨率:', game._videoWidth, 'x', game._videoHeight);
+
     return true;
   } catch (e) {
     noCameraMsg.style.display = 'block';
@@ -1796,10 +1834,16 @@ async function initHands() {
       const hands = new Hands({
         locateFile: (f) => src.base + f
       });
+      // ★ v21: 移动端优化配置
+      // 检测是否为移动设备（触摸屏 + 窄屏幕）
+      const isMobile = ('ontouchstart' in window || navigator.maxTouchPoints > 0) && window.innerWidth < 768;
       hands.setOptions({
-        maxNumHands: 1, modelComplexity: 1,
-        minDetectionConfidence: 0.7, minTrackingConfidence: 0.5,
+        maxNumHands: 1,
+        modelComplexity: isMobile ? 0 : 1,           // 移动端用轻量模型
+        minDetectionConfidence: isMobile ? 0.5 : 0.7, // 移动端降低检测门槛
+        minTrackingConfidence: 0.5,
       });
+      console.log('[MediaPipe] 模式:', isMobile ? '移动端(轻量)' : '桌面端(完整)');
       hands.onResults(r => {
         // ★ v20: 记录回调触发时间，用于健康检查
         window._lastOnResultsTime = performance.now();
@@ -1893,6 +1937,7 @@ function gameLoop(ts) {
       diagMode.textContent = `模式: ${game.mode} | paused:${game.stagePaused} | over:${game.gameOver}`;
       diagFruits.textContent = `水果: ${game.fruits.length} 活跃 | 半片: ${game.halves.length}`;
       diagSpeed.textContent = `速度: ${Math.round(game.tipSpeed)}px/s | 帧: ${fps}fps`;
+      diagVideo.textContent = `视频: ${game._videoWidth}x${game._videoHeight} | 屏幕: ${game.w}x${game.h}`;
       // v20: 新鲜度显示
       if (game._lastHandDataTime) {
         const stale = Math.round(performance.now() - game._lastHandDataTime);
