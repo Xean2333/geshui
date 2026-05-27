@@ -105,7 +105,7 @@ body {
   <div id="diag-panel" style="display:none;position:absolute;top:14px;right:14px;z-index:40;
     background:rgba(0,0,0,0.7);color:#0f0;font:10px monospace;padding:8px 12px;border-radius:6px;
     border:1px solid rgba(0,255,0,0.2);line-height:1.6;max-width:200px;pointer-events:none;">
-    <div>v23-mobile</div>
+    <div>v24-raf</div>
     <div id="diag-hand">手: --</div>
     <div id="diag-mode">模式: --</div>
     <div id="diag-fruits">水果: --</div>
@@ -1887,19 +1887,20 @@ async function initHands() {
           game.processHand(null);
         }
       });
-      const cam = new Camera(video, {
-        onFrame: async () => {
-          try {
-            await hands.send({ image: video });
-          } catch (e) {
-            // ★ v20: Camera 帧处理出错时不崩溃，静默跳过
-            console.warn('[Camera] 帧处理异常:', e.message);
-          }
-        },
-        width: 640, height: 480,
-      });
-      lt.textContent = '启动摄像头...';
-      await cam.start();
+      // ★★★ v24: 用 requestAnimationFrame 替代 MediaPipe Camera 类 ★★★
+      // MediaPipe 的 Camera 类内部使用 requestVideoFrameCallback，
+      // 该 API 在 iOS Safari / 部分安卓浏览器不完全支持，
+      // 导致 onFrame 回调永远不触发 → onResults 回调计数始终为 0。
+      // 改用简单的 rAF 循环直接调用 hands.send()，兼容所有浏览器。
+      lt.textContent = '启动手势追踪...';
+      const _sendFrame = () => {
+        if (video.readyState >= 2) {
+          hands.send({ image: video }).catch(() => {});
+        }
+        window._frameLoopId = requestAnimationFrame(_sendFrame);
+      };
+      window._frameLoopId = requestAnimationFrame(_sendFrame);
+      console.log('[MediaPipe] rAF 帧循环已启动');
       
       loadingOverlay.classList.add('hidden');
       statusDot.classList.add('active');
