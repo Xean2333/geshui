@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>手势调试工具</title>
+<style>
+body { margin:0; background:#111; color:#0f0; font-family:monospace; }
+#info { position:fixed; top:10px; left:10px; font-size:14px; z-index:999; background:rgba(0,0,0,0.8); padding:10px; border-radius:8px; min-width:300px; }
+#log { position:fixed; top:10px; right:10px; font-size:12px; z-index:999; background:rgba(0,0,0,0.8); padding:10px; border-radius:8px; width:320px; max-height:90vh; overflow-y:auto; }
+canvas { display:block; }
+</style>
+</head>
+<body>
+<div id="info">
+  <div>📡 MediaPipe 状态: <span id="s-mp">加载中...</span></div>
+  <div>📷 摄像头: <span id="s-cam">等待...</span></div>
+  <div>🤚 手部检测: <span id="s-hand">未检测到</span></div>
+  <div>📍 食指位置: <span id="s-pos">-</span></div>
+  <div>⚡ 速度: <span id="s-speed">-</span></div>
+  <div>🎯 onResults 调用次数: <span id="s-count">0</span></div>
+  <div>🕐 最后一帧时间: <span id="s-time">-</span></div>
+</div>
+<div id="log"><b>日志:</b><br></div>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+let resultCount = 0;
+let lastX = 0, lastY = 0, hasHand = false;
+let lastTime = 0;
+
+function log(msg, color) {
+  const d = document.getElementById('log');
+  const line = document.createElement('div');
+  line.style.color = color || '#0f0';
+  line.textContent = new Date().toLocaleTimeString() + ' ' + msg;
+  d.appendChild(line);
+  d.scrollTop = d.scrollHeight;
+  console.log(msg);
+}
+
+function setStatus(id, val, color) {
+  const el = document.getElementById(id);
+  el.textContent = val;
+  el.style.color = color || '#0f0';
+}
+
+// 画布渲染循环
+const points = [];
+function render() {
+  requestAnimationFrame(render);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // 画轨迹
+  if (points.length > 1) {
+    ctx.strokeStyle = '#0ff';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+    ctx.stroke();
+  }
+  // 清除过期点
+  if (points.length > 60) points.shift();
+
+  if (hasHand) {
+    ctx.fillStyle = '#0ff';
+    ctx.shadowColor = '#0ff';
+    ctx.shadowBlur = 20;
+    ctx.beginPath();
+    ctx.arc(lastX, lastY, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  // 中心十字
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(canvas.width/2, 0); ctx.lineTo(canvas.width/2, canvas.height);
+  ctx.moveTo(0, canvas.height/2); ctx.lineTo(canvas.width, canvas.height/2);
+  ctx.stroke();
+}
+render();
+
+// 加载 MediaPipe
+log('开始加载 MediaPipe...', '#ff0');
+const script1 = document.createElement('script');
+script1.src = './mediapipe/hands/hands.js';
+script1.onload = () => {
+  log('✅ hands.js 已加载', '#0f0');
+  setStatus('s-mp', '✅ hands.js OK');
+  
+  const script2 = document.createElement('script');
+  script2.src = './mediapipe/camera_utils.js';
+  script2.onload = () => {
+    log('✅ camera_utils.js 已加载', '#0f0');
+    setStatus('s-mp', '✅ 两个JS均已加载');
+    startDetection();
+  };
+  script2.onerror = (e) => {
+    log('❌ camera_utils.js 加载失败', '#f00');
+    setStatus('s-mp', '❌ camera_utils 失败', '#f00');
+  };
+  document.body.appendChild(script2);
+};
+script1.onerror = (e) => {
+  log('❌ hands.js 加载失败，尝试CDN...', '#f88');
+  setStatus('s-mp', '本地失败，试CDN...', '#ff0');
+  const s = document.createElement('script');
+  s.src = 'https://unpkg.com/@mediapipe/hands@0.4.1675469240/hands.js';
+  s.crossOrigin = 'anonymous';
+  s.onload = () => log('✅ CDN hands.js OK', '#0f0');
+  s.onerror = () => { log('❌ CDN也失败了', '#f00'); setStatus('s-mp', '❌ 完全失败', '#f00'); };
+  document.body.appendChild(s);
+};
+document.body.appendChild(script1);
+
+function startDetection() {
+  const video = document.createElement('video');
+  video.style.display = 'none';
+  document.body.appendChild(video);
+
+  // 检查全局变量
+  log('window.Hands = ' + typeof window.Hands, typeof window.Hands === 'function' ? '#0f0' : '#f00');
+  log('window.Camera = ' + typeof window.Camera, typeof window.Camera === 'function' ? '#0f0' : '#f00');
+
+  if (typeof window.Hands !== 'function') {
+    setStatus('s-mp', '❌ Hands 类不存在', '#f00');
+    log('❌ Hands 类未定义！WASM可能加载失败', '#f00');
+    return;
+  }
+
+  try {
+    const hands = new Hands({
+      locateFile: (f) => {
+        const url = './mediapipe/hands/' + f;
+        log('🔍 locateFile 请求: ' + f + ' → ' + url);
+        return url;
+      }
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5,
+    });
+
+    hands.onResults((results) => {
+      resultCount++;
+      document.getElementById('s-count').textContent = resultCount;
+      document.getElementById('s-time').textContent = new Date().toLocaleTimeString();
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const lm = results.multiHandLandmarks[0];
+        const tip = lm[8]; // 食指尖
+        const x = (1 - tip.x) * canvas.width;
+        const y = tip.y * canvas.height;
+
+        const dx = x - lastX, dy = y - lastY;
+        const now = performance.now();
+        const dt = lastTime ? (now - lastTime) / 1000 : 0.033;
+        const speed = Math.sqrt(dx*dx + dy*dy) / dt;
+        lastTime = now;
+
+        hasHand = true;
+        lastX = x; lastY = y;
+        points.push({x, y});
+
+        setStatus('s-hand', `✅ 检测到手 [${results.multiHandLandmarks.length}只]`);
+        setStatus('s-pos', `(${Math.round(x)}, ${Math.round(y)})`);
+        setStatus('s-speed', `${Math.round(speed)} px/s`);
+
+        if (resultCount % 30 === 0) {
+          log(`帧${resultCount}: 食指(${Math.round(x)},${Math.round(y)}) 速度=${Math.round(speed)}px/s`);
+        }
+      } else {
+        hasHand = false;
+        setStatus('s-hand', '⏳ 未检测到手', '#ff0');
+      }
+    });
+
+    log('✅ Hands 对象创建成功', '#0f0');
+    setStatus('s-mp', '✅ Hands初始化中...');
+
+    // 请求摄像头
+    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' } })
+      .then(stream => {
+        video.srcObject = stream;
+        video.play();
+        setStatus('s-cam', '✅ 摄像头已开启');
+        log('✅ 摄像头开启成功', '#0f0');
+
+        // 手动帧循环（不用Camera类）
+        let frameCount = 0;
+        async function sendFrame() {
+          if (video.readyState >= 2) {
+            try {
+              await hands.send({ image: video });
+              frameCount++;
+              if (frameCount === 1) log('✅ 第一帧已发送给MediaPipe', '#0f0');
+              if (frameCount === 5) log('✅ 连续5帧正常发送', '#0f0');
+            } catch(e) {
+              if (frameCount < 5) log('❌ hands.send 报错: ' + e.message, '#f00');
+            }
+          }
+          requestAnimationFrame(sendFrame);
+        }
+        sendFrame();
+      })
+      .catch(e => {
+        setStatus('s-cam', '❌ ' + e.message, '#f00');
+        log('❌ 摄像头失败: ' + e.message, '#f00');
+      });
+
+  } catch(e) {
+    log('❌ new Hands() 失败: ' + e.message, '#f00');
+    setStatus('s-mp', '❌ Hands创建失败', '#f00');
+  }
+}
+</script>
+</body>
+</html>

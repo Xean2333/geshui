@@ -38,6 +38,22 @@ body {
 .btn.primary { background:rgba(255,112,40,0.35); border-color:rgba(255,140,60,0.5); }
 .btn.primary:hover { background:rgba(255,112,40,0.5); }
 
+/* 返回首页按钮 */
+#btn-home {
+  position:absolute; top:14px; left:14px; z-index:30;
+  background:rgba(0,0,0,0.45); color:rgba(255,255,255,0.7);
+  border:1px solid rgba(255,255,255,0.15); border-radius:22px;
+  padding:7px 16px; font-size:13px; cursor:pointer; letter-spacing:1px;
+  font-family:'PingFang SC','Microsoft YaHei',sans-serif;
+  transition:all 0.25s; display:none; backdrop-filter:blur(4px);
+  -webkit-backdrop-filter:blur(4px);
+}
+#btn-home:hover {
+  background:rgba(0,0,0,0.65); color:#fff;
+  border-color:rgba(255,255,255,0.35); transform:scale(1.05);
+}
+#btn-home.visible { display:block; }
+
 /* 底部状态 */
 #status-bar {
   position:absolute; bottom:20px; left:20px; right:20px;
@@ -81,6 +97,9 @@ body {
 <div id="container">
   <video id="video" autoplay playsinline></video>
   <canvas id="gameCanvas"></canvas>
+
+  <!-- 返回首页按钮（游戏中可见） -->
+  <button id="btn-home" title="返回首页">🏠 返回</button>
 
   <!-- 主菜单 -->
   <div class="overlay show" id="menu-screen">
@@ -283,16 +302,16 @@ function getStageConfig(lv) {
 // 水果类型
 // ============================================================
 const FRUIT_TYPES = [
-  { name:'西瓜',  color:'#2e7d32', inner:'#e53935', seed:'#333',  radius:38 },
-  { name:'橙子',  color:'#ef6c00', inner:'#ffa726', seed:'#fff',  radius:29 },
-  { name:'苹果',  color:'#c62828', inner:'#fff9c4', seed:'#4e342e', radius:30 },
-  { name:'猕猴桃',color:'#6d4c41', inner:'#a5d63e', seed:'#2e2e2e', radius:27 },
-  { name:'菠萝',  color:'#f9a825', inner:'#fff176', seed:'#5d4037', radius:33 },
-  { name:'桃子',  color:'#ff8a80', inner:'#ffccbc', seed:'#8d6e63', radius:28 },
-  { name:'柠檬',  color:'#fdd835', inner:'#fff9c4', seed:'#fff',  radius:26 },
-  { name:'葡萄',  color:'#7b1fa2', inner:'#ce93d8', seed:'#4a148c', radius:26 },
+  { name:'西瓜',  color:'#2e7d32', inner:'#e53935', seed:'#333',  radius:52 },
+  { name:'橙子',  color:'#ef6c00', inner:'#ffa726', seed:'#fff',  radius:40 },
+  { name:'苹果',  color:'#c62828', inner:'#fff9c4', seed:'#4e342e', radius:42 },
+  { name:'猕猴桃',color:'#6d4c41', inner:'#a5d63e', seed:'#2e2e2e', radius:38 },
+  { name:'菠萝',  color:'#f9a825', inner:'#fff176', seed:'#5d4037', radius:46 },
+  { name:'桃子',  color:'#ff8a80', inner:'#ffccbc', seed:'#8d6e63', radius:39 },
+  { name:'柠檬',  color:'#fdd835', inner:'#fff9c4', seed:'#fff',  radius:36 },
+  { name:'葡萄',  color:'#7b1fa2', inner:'#ce93d8', seed:'#4a148c', radius:36 },
 ];
-const BOMB_TYPE = { name:'炸弹', color:'#212121', inner:'#424242', seed:'#ff5722', radius:32, isBomb:true };
+const BOMB_TYPE = { name:'炸弹', color:'#212121', inner:'#424242', seed:'#ff5722', radius:42, isBomb:true };
 
 // ============================================================
 // 木质背景生成器
@@ -932,6 +951,7 @@ class FruitNinjaGame {
     this.fingertipX = 0; this.fingertipY = 0;
     this.prevTipX = 0; this.prevTipY = 0;
     this.tipSpeed = 0; this.hasHand = false;
+    this.knifeAngle = -Math.PI / 4; // 刀的角度
     this._comboFrames = 0;
 
     this.resize();
@@ -951,6 +971,7 @@ class FruitNinjaGame {
     this.mode = GameMode.STAGE;
     this.loadStage(1);
     document.getElementById('menu-screen').classList.remove('show');
+    btnHome.classList.add('visible');
   }
 
   startEndlessMode() {
@@ -963,6 +984,7 @@ class FruitNinjaGame {
     this.nextSpawn = FRUIT_TYPES[0] ? 1.2 : 1.2;
     document.getElementById('menu-screen').classList.remove('show');
     document.getElementById('endless-over').classList.remove('show');
+    btnHome.classList.add('visible');
     statusText.textContent = '无限模式';
   }
 
@@ -1068,28 +1090,42 @@ class FruitNinjaGame {
       this.comboEffects.push(new ComboEffect(fruit.x, fruit.y - 30, this.combo));
     }
 
-    const pushSpd = 180;
+    const pushSpd = 260;
     for (let side = -1; side <= 1; side += 2) {
       const ha = slashAngle + Math.PI / 2 * side;
       this.halves.push(new FruitHalf(
         fruit.x, fruit.y,
         fruit.vx * 0.5 + Math.cos(ha) * pushSpd * side,
-        fruit.vy * 0.5 + Math.sin(ha) * pushSpd * 0.5 - 80,
+        fruit.vy * 0.5 + Math.sin(ha) * pushSpd * 0.5 - 100,
         fruit.type, slashAngle + Math.PI * (side > 0 ? 0.5 : -0.5),
-        (Math.random() - 0.5) * 8 * side
+        (Math.random() - 0.5) * 10 * side
       ));
     }
 
+    // 爆汁效果：大量汁液粒子 + 溅射
     const innerColor = fruit.type.inner || '#ff5252';
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 30; i++) {
       const a = Math.random() * Math.PI * 2;
-      const spd = 100 + Math.random() * 250;
+      const spd = 120 + Math.random() * 400;
+      const dist = 0.3 + Math.random() * 0.7;
       this.particles.push(new JuiceParticle(
-        fruit.x + (Math.random()-0.5)*10, fruit.y + (Math.random()-0.5)*10,
-        Math.cos(a) * spd, Math.sin(a) * spd - 80, innerColor, 2 + Math.random() * 5
+        fruit.x + Math.cos(a) * fruit.r * dist,
+        fruit.y + Math.sin(a) * fruit.r * dist,
+        Math.cos(a) * spd, Math.sin(a) * spd - 60,
+        innerColor, 2.5 + Math.random() * 7
       ));
     }
-    this.shakeAmt = Math.max(this.shakeAmt, 4);
+    // 二次飞溅（淡色小滴）
+    for (let i = 0; i < 20; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const spd = 60 + Math.random() * 200;
+      this.particles.push(new JuiceParticle(
+        fruit.x, fruit.y,
+        Math.cos(a) * spd, Math.sin(a) * spd - 40,
+        fruit.type.color, 1.5 + Math.random() * 3
+      ));
+    }
+    this.shakeAmt = Math.max(this.shakeAmt, 6);
   }
 
   _explode(x, y) {
@@ -1361,28 +1397,112 @@ class FruitNinjaGame {
     for (const p of this.popups) p.draw(ctx);
     for (const c of this.comboEffects) c.draw(ctx);
 
-    // 指尖光标（只要识别到手就显示，包括菜单界面）
+    // 🔪 水果刀光标（替代原来的指尖圆点）
     if (this.hasHand) {
       const fx = this.fingertipX, fy = this.fingertipY;
       const fast = this.tipSpeed > 150;
+
+      // 根据移动方向更新刀的角度，静止时保持上一次角度
+      const moved = Math.sqrt((this.fingertipX - this.prevTipX) ** 2 + (this.fingertipY - this.prevTipY) ** 2);
+      if (moved > 4) {
+        this.knifeAngle = Math.atan2(this.fingertipY - this.prevTipY, this.fingertipX - this.prevTipX);
+      }
+
       ctx.save();
-      // 外圈（位置指示）
-      ctx.shadowColor = fast ? '#00ffcc' : '#ffff88';
-      ctx.shadowBlur = fast ? 20 : 12;
-      ctx.strokeStyle = fast ? 'rgba(0,255,200,0.95)' : 'rgba(255,255,100,0.8)';
-      ctx.lineWidth = fast ? 3 : 2;
+      ctx.translate(fx, fy);
+      ctx.rotate(this.knifeAngle);
+
+      const bladeLen = 56;
+      const bladeW = 16;
+      const handleLen = 26;
+
+      // === 刀身光晕（检测到手时发光） ===
+      const glowAlpha = fast ? 0.9 : 0.55;
+      const glowColor = fast ? '#00e5ff' : '#ffd740';
+      ctx.shadowColor = glowColor;
+      ctx.shadowBlur = fast ? 28 : 18;
+
+      // 外层光晕刀身（模糊大轮廓）
+      ctx.fillStyle = `rgba(200,230,255,${glowAlpha * 0.3})`;
       ctx.beginPath();
-      ctx.arc(fx, fy, fast ? 16 : 12, 0, Math.PI * 2);
+      ctx.moveTo(0, -bladeW * 1.3);
+      ctx.lineTo(bladeLen + 6, -3);
+      ctx.lineTo(bladeLen + 6, 3);
+      ctx.lineTo(0, bladeW * 1.3);
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      // === 刀身主体 ===
+      // 刀刃 - 金属渐变感
+      const bladeGrad = ctx.createLinearGradient(0, -bladeW / 2, 0, bladeW / 2);
+      bladeGrad.addColorStop(0, '#d0d8e8');
+      bladeGrad.addColorStop(0.3, '#f0f4fa');
+      bladeGrad.addColorStop(0.5, '#e8ecf4');
+      bladeGrad.addColorStop(0.7, '#c8d0e0');
+      bladeGrad.addColorStop(1, '#a0a8b8');
+      ctx.fillStyle = bladeGrad;
+      ctx.beginPath();
+      ctx.moveTo(0, -bladeW / 2);      // 刀背起点
+      ctx.lineTo(bladeLen * 0.85, -3); // 刀背到刀尖
+      ctx.lineTo(bladeLen, 0);          // 刀尖
+      ctx.lineTo(bladeLen * 0.85, 3);  // 刀刃到刀尖
+      ctx.lineTo(0, bladeW / 2);       // 刀刃起点
+      ctx.closePath();
+      ctx.fill();
+
+      // 刀刃亮边（切割线高光）
+      ctx.strokeStyle = `rgba(255,255,255,${fast ? 0.95 : 0.7})`;
+      ctx.lineWidth = 2;
+      ctx.shadowColor = glowColor;
+      ctx.shadowBlur = fast ? 16 : 8;
+      ctx.beginPath();
+      ctx.moveTo(0, bladeW / 2);
+      ctx.lineTo(bladeLen * 0.85, 3);
       ctx.stroke();
-      // 内圆
-      ctx.fillStyle = fast ? 'rgba(0,255,200,0.35)' : 'rgba(255,255,100,0.2)';
-      ctx.fill();
-      // 中心点
-      ctx.fillStyle = fast ? '#00ffcc' : '#ffff88';
-      ctx.shadowBlur = 6;
+      ctx.shadowBlur = 0;
+
+      // 刀身中线（脊线）
+      ctx.strokeStyle = `rgba(255,255,255,${fast ? 0.5 : 0.25})`;
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.arc(fx, fy, 3, 0, Math.PI * 2);
+      ctx.moveTo(0, -1);
+      ctx.lineTo(bladeLen * 0.75, 0);
+      ctx.stroke();
+
+      // === 刀柄 ===
+      const hx = -2;
+      const hy = -bladeW / 2 - 1;
+      const hh = bladeW + 2;
+      const hw = handleLen;
+
+      // 刀柄主体（深色木质）
+      const handleGrad = ctx.createLinearGradient(hx, 0, hx + hw, 0);
+      handleGrad.addColorStop(0, '#3E2723');
+      handleGrad.addColorStop(0.3, '#5D4037');
+      handleGrad.addColorStop(0.5, '#6D4C41');
+      handleGrad.addColorStop(0.7, '#5D4037');
+      handleGrad.addColorStop(1, '#3E2723');
+      ctx.fillStyle = handleGrad;
+      ctx.beginPath();
+      ctx.roundRect(hx - hw, hy, hw, hh, 5);
       ctx.fill();
+
+      // 刀柄环（金属）
+      for (let ring = 0; ring < 2; ring++) {
+        const rx = hx - hw * (0.25 + ring * 0.4);
+        ctx.fillStyle = '#BCAAA4';
+        ctx.fillRect(rx - 2, hy, 4, hh);
+        ctx.fillStyle = '#FFCC80';
+        ctx.fillRect(rx - 1, hy + 1, 2, hh - 2);
+      }
+
+      // 刀柄末端
+      ctx.fillStyle = '#4E342E';
+      ctx.beginPath();
+      ctx.roundRect(hx - hw - 6, hy + 2, 8, hh - 4, 3);
+      ctx.fill();
+
       ctx.restore();
     }
 
@@ -1510,6 +1630,28 @@ const fpsDisplay = document.getElementById('fps-display');
 const game = new FruitNinjaGame(gameCanvas);
 let frameCount = 0, lastFpsTime = performance.now(), fps = 0;
 
+const btnHome = document.getElementById('btn-home');
+
+// ============================================================
+// 返回首页按钮
+// ============================================================
+btnHome.addEventListener('click', () => {
+  game.mode = GameMode.MENU;
+  game.fruits = []; game.halves = []; game.particles = []; game.popups = []; game.comboEffects = [];
+  game.gameOver = false; game.stagePaused = false;
+  game.score = 0; game.combo = 0; game.maxCombo = 0;
+  game.bombHits = 0; game.bombFlash = 0;
+  game._passedHandled = false;
+  document.getElementById('menu-screen').classList.add('show');
+  document.getElementById('level-intro').classList.remove('show');
+  document.getElementById('level-pass').classList.remove('show');
+  document.getElementById('level-fail').classList.remove('show');
+  document.getElementById('endless-over').classList.remove('show');
+  document.getElementById('all-clear').classList.remove('show');
+  btnHome.classList.remove('visible');
+  statusText.textContent = '已就绪 · 请选择模式';
+});
+
 // ============================================================
 // 按钮事件
 // ============================================================
@@ -1537,7 +1679,9 @@ document.getElementById('btn-menu-fail').addEventListener('click', () => {
   game.fruits = []; game.halves = []; game.particles = []; game.popups = []; game.comboEffects = [];
   game.gameOver = false; game.stagePaused = false;
   game.score = 0; game.combo = 0; game.maxCombo = 0;
+  game._passedHandled = false;
   document.getElementById('menu-screen').classList.add('show');
+  btnHome.classList.remove('visible');
   statusText.textContent = '菜单';
 });
 
