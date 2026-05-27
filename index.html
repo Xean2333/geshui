@@ -234,8 +234,20 @@ window.mpReadyPromise = new Promise(r => { window._mpResolve = r; });
 const GRAVITY = 650;
 const TRAIL_MAX = 28;
 const TRAIL_DECAY = 4.5;
-const SLASH_VEL_THRESHOLD = 80;   // 大幅降低阈值，确保普通手势都能触发
 const LM = { WRIST:0, INDEX_TIP:8, MIDDLE_TIP:12, INDEX_MCP:5, INDEX_PIP:6 };
+
+// ============================================================
+// 全局手势状态（由 MediaPipe 回调写入，由游戏主循环读取）
+// ============================================================
+const GestureState = {
+  hasHand: false,
+  x: 0, y: 0,          // 食指尖当前位置
+  px: 0, py: 0,        // 上一帧位置
+  x2: 0, y2: 0,        // 中指尖当前位置
+  speed: 0,            // 像素/秒
+  frameId: 0,          // 每次更新递增，gameLoop用来检测是否有新数据
+  lastTs: 0,           // performance.now() 时间戳
+};
 
 // ============================================================
 // 关卡配置
@@ -1128,59 +1140,45 @@ class FruitNinjaGame {
   }
 
   // ---------- 手势 ----------
+  // 注意：此方法不再做碰撞检测，只同步指尖位置到 this.fingertipX/Y
+  // 真正的碰撞检测在 update() 里统一处理（同步、可靠）
   processHand(handData) {
-    if (!handData) { this.hasHand = false; return; }
-    if (this.gameOver || this.stagePaused) { this.hasHand = false; return; }
+    if (!handData) {
+      this.hasHand = false;
+      return;
+    }
     const lm = handData.landmarks;
     if (!lm || lm.length < 21) { this.hasHand = false; return; }
 
-    const now = performance.now();
-    const dt = this._lastHandTime ? Math.min(0.1, (now - this._lastHandTime) / 1000) : 0.033;
-    this._lastHandTime = now;
-
-    // 用食指尖（8）做主要检测点，同时跟踪中指尖（12）用于覆盖更大面积
     const iTip = lm[LM.INDEX_TIP];
     const mTip = lm[LM.MIDDLE_TIP];
-
-    const tx = (1 - iTip.x) * this.w;
-    const ty = iTip.y * this.h;
+    const tx  = (1 - iTip.x) * this.w;
+    const ty  = iTip.y * this.h;
     const tx2 = (1 - mTip.x) * this.w;
     const ty2 = mTip.y * this.h;
 
-    if (this.hasHand && dt > 0) {
-      const ddx = tx - this.prevTipX, ddy = ty - this.prevTipY;
-      const dist = Math.sqrt(ddx * ddx + ddy * ddy);
-      // 像素/秒速度
-      this.tipSpeed = dist / dt;
+    const now = performance.now();
+    const dt  = this._lastHandTime ? Math.min(0.1, (now - this._lastHandTime) / 1000) : 0.033;
+    this._lastHandTime = now;
 
-      // 始终记录轨迹（只要有手就记录，不设速度门槛）
-      // 但给轨迹点标记速度，用于后续判断
-      this.slashTrail.addPoint(tx, ty, this.tipSpeed);
-      // 中指尖也加入轨迹，增大覆盖面
-      this.slashTrail.addPoint(tx2, ty2, this.tipSpeed);
+    const dist = Math.sqrt((tx - this.fingertipX) ** 2 + (ty - this.fingertipY) ** 2);
+    this.tipSpeed = dist / Math.max(dt, 0.001);
 
-      // 直接碰撞检测：指尖半径范围内的水果直接切断（不依赖速度阈值）
-      if (dist > 3) { // 有实际移动才检测
-        this._checkDirectCollision(tx, ty, this.prevTipX, this.prevTipY);
-        this._checkDirectCollision(tx2, ty2, this.prevTipX, this.prevTipY);
-      }
-    }
+    // 保存上一帧位置（用于轨迹绘制和碰撞线段）
+    this.prevTipX = this.fingertipX;
+    this.prevTipY = this.fingertipY;
+    this.prevTipX2 = this.fingertipX2 || tx2;
+    this.prevTipY2 = this.fingertipY2 || ty2;
 
-    this.prevTipX = this.fingertipX; this.prevTipY = this.fingertipY;
-    this.fingertipX = tx; this.fingertipY = ty;
+    this.fingertipX  = tx;
+    this.fingertipY  = ty;
+    this.fingertipX2 = tx2;
+    this.fingertipY2 = ty2;
     this.hasHand = true;
-  }
+    this._newHandFrame = true; // 标记本帧有新手势数据
 
-  // 指尖直接碰撞检测（备用机制，确保手机端也能切水果）
-  _checkDirectCollision(x, y, px, py) {
-    for (const f of this.fruits) {
-      if (!f.alive || f.sliced) continue;
-      // 检测指尖是否在水果范围内
-      const dx = f.x - x, dy = f.y - y;
-      if (Math.sqrt(dx * dx + dy * dy) < f.type.radius + 18) {
-        this.sliceFruit(f, px, py, x, y);
-      }
-    }
+    // 往轨迹里加点（用于刀光绘制）
+    this.slashTrail.addPoint(tx, ty, this.tipSpeed);
   }
 
   // ---------- 主更新 ----------
@@ -1207,10 +1205,45 @@ class FruitNinjaGame {
     this.slashTrail.update(dt);
     for (const f of this.fruits) f.update(dt);
 
-    // 碰撞检测
-    if (this.slashTrail.hasTrail) {
+    // ---- 手势碰撞检测 ----
+    // 只要有手，且手在动（prevTip 存在），就在 update 里做碰撞
+    // 不依赖速度阈值，不依赖异步回调时机
+    const hasNewGesture = this.hasHand && this._newHandFrame;
+    this._newHandFrame = false; // 消费掉标记
+
+    let slicedThisFrame = false;
+    if (hasNewGesture) {
+      const cx = this.fingertipX, cy = this.fingertipY;
+      const px = this.prevTipX, py = this.prevTipY;
+      const cx2 = this.fingertipX2 || cx, cy2 = this.fingertipY2 || cy;
+      const moved = Math.sqrt((cx - px) ** 2 + (cy - py) ** 2);
+
+      for (const f of this.fruits) {
+        if (!f.alive || f.sliced) continue;
+        const R = f.r + 22; // 碰撞半径 = 水果半径 + 手指粗细容错
+
+        // 方法1：当前帧指尖在水果内（静态重叠检测）
+        const d1 = Math.sqrt((f.x - cx) ** 2 + (f.y - cy) ** 2);
+        const d2 = Math.sqrt((f.x - cx2) ** 2 + (f.y - cy2) ** 2);
+        if (d1 < R || d2 < R) {
+          this.sliceFruit(f, px, py, cx, cy);
+          slicedThisFrame = true;
+          continue;
+        }
+
+        // 方法2：扫过检测（线段与圆相交），只要有移动就做
+        if (moved > 2) {
+          if (f.hitsLine(px, py, cx, cy)) {
+            this.sliceFruit(f, px, py, cx, cy);
+            slicedThisFrame = true;
+          }
+        }
+      }
+    }
+
+    // 轨迹线段也做碰撞（保留原有逻辑作为第三道保险）
+    if (!slicedThisFrame && this.slashTrail.hasTrail) {
       const segs = this.slashTrail.getSegments();
-      let slicedThisFrame = false;
       for (const f of this.fruits) {
         if (!f.alive || f.sliced) continue;
         for (const s of segs) {
@@ -1219,14 +1252,15 @@ class FruitNinjaGame {
             slicedThisFrame = true; break;
           }
         }
+        if (slicedThisFrame) break;
       }
-      if (!slicedThisFrame) {
-        this._comboFrames = (this._comboFrames || 0) + 1;
-        if (this._comboFrames > 8) { this.resetCombo(); this._comboFrames = 0; }
-      } else { this._comboFrames = 0; }
-    } else if (this._comboFrames !== undefined) {
-      this._comboFrames++;
-      if (this._comboFrames > 5) { this.resetCombo(); this._comboFrames = 0; }
+    }
+
+    if (!slicedThisFrame) {
+      this._comboFrames = (this._comboFrames || 0) + 1;
+      if (this._comboFrames > 10) { this.resetCombo(); this._comboFrames = 0; }
+    } else {
+      this._comboFrames = 0;
     }
 
     // 处理掉落水果
@@ -1327,19 +1361,27 @@ class FruitNinjaGame {
     for (const p of this.popups) p.draw(ctx);
     for (const c of this.comboEffects) c.draw(ctx);
 
-    // 指尖光标（只要识别到手就显示）
+    // 指尖光标（只要识别到手就显示，包括菜单界面）
     if (this.hasHand) {
       const fx = this.fingertipX, fy = this.fingertipY;
-      const fast = this.tipSpeed > 200;
+      const fast = this.tipSpeed > 150;
       ctx.save();
-      ctx.shadowColor = fast ? '#00ffcc' : '#ffffff';
-      ctx.shadowBlur = fast ? 18 : 10;
-      ctx.strokeStyle = fast ? 'rgba(0,255,200,0.9)' : 'rgba(255,255,255,0.7)';
-      ctx.lineWidth = fast ? 2.5 : 1.5;
+      // 外圈（位置指示）
+      ctx.shadowColor = fast ? '#00ffcc' : '#ffff88';
+      ctx.shadowBlur = fast ? 20 : 12;
+      ctx.strokeStyle = fast ? 'rgba(0,255,200,0.95)' : 'rgba(255,255,100,0.8)';
+      ctx.lineWidth = fast ? 3 : 2;
       ctx.beginPath();
-      ctx.arc(fx, fy, fast ? 14 : 10, 0, Math.PI * 2);
+      ctx.arc(fx, fy, fast ? 16 : 12, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.fillStyle = fast ? 'rgba(0,255,200,0.4)' : 'rgba(255,255,255,0.25)';
+      // 内圆
+      ctx.fillStyle = fast ? 'rgba(0,255,200,0.35)' : 'rgba(255,255,100,0.2)';
+      ctx.fill();
+      // 中心点
+      ctx.fillStyle = fast ? '#00ffcc' : '#ffff88';
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.arc(fx, fy, 3, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
@@ -1543,14 +1585,16 @@ async function initHands() {
         minDetectionConfidence: 0.7, minTrackingConfidence: 0.5,
       });
       hands.onResults(r => {
-        // 更新状态栏指示（只更新一次避免频繁DOM操作）
-        if (!window._handDetected) {
-          window._handDetected = true;
-          document.getElementById('status-dot').classList.add('active');
-          document.getElementById('status-text').textContent = '手势识别中';
-        }
+        // 直接写入 game 对象的手势状态
+        // 这里不做任何碰撞检测，只记录位置，gameLoop 会在 update() 里处理
         if (r.multiHandLandmarks && r.multiHandLandmarks.length > 0) {
           game.processHand({ landmarks: r.multiHandLandmarks[0] });
+          // 第一次检测到手时更新状态栏
+          if (!window._handDetected) {
+            window._handDetected = true;
+            document.getElementById('status-dot').classList.add('active');
+            document.getElementById('status-text').textContent = '手势识别中';
+          }
         } else {
           game.processHand(null);
         }
