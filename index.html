@@ -105,7 +105,8 @@ body {
   <div id="diag-panel" style="display:none;position:absolute;top:14px;right:14px;z-index:40;
     background:rgba(0,0,0,0.7);color:#0f0;font:10px monospace;padding:8px 12px;border-radius:6px;
     border:1px solid rgba(0,255,0,0.2);line-height:1.6;max-width:200px;pointer-events:none;">
-    <div>v25-sendfix</div>
+    <div>v26-sw</div>
+    <div id="diag-sab">SAB: --</div>
     <div id="diag-hand">手: --</div>
     <div id="diag-mode">模式: --</div>
     <div id="diag-fruits">水果: --</div>
@@ -1738,12 +1739,40 @@ const diagStale = document.getElementById('diag-stale');
 const diagVideo = document.getElementById('diag-video');
 const diagCb = document.getElementById('diag-cb');
 const diagSent = document.getElementById('diag-sent');
+const diagSAB = document.getElementById('diag-sab');
 const diagMobile = document.getElementById('diag-mobile');
 
 // ★ v23: 移动端检测
 const IS_MOBILE = ('ontouchstart' in window || navigator.maxTouchPoints > 0) && window.innerWidth < 768;
 window._onResultsCount = 0; // onResults 回调计数器
 diagMobile.textContent = `设备: ${IS_MOBILE ? '📱移动端' : '🖥桌面端'}`;
+
+// ★ v26: SharedArrayBuffer 状态检查
+// MediaPipe Hands WASM 需要 SharedArrayBuffer，移动 Safari 要求 COOP/COEP headers
+const _sabAvailable = typeof SharedArrayBuffer !== 'undefined';
+diagSAB.textContent = _sabAvailable ? 'SAB: ✅' : 'SAB: ❌ 需SW';
+diagSAB.style.color = _sabAvailable ? '#0f6' : '#f66';
+
+// ★ v26: 注册 Service Worker 注入 Cross-Origin-Isolation headers
+// GitHub Pages 不返回 COOP/COEP headers，导致 SharedArrayBuffer 不可用
+// SW 激活后自动刷新页面，第二次加载即可拿到 headers
+if (!_sabAvailable && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').then(reg => {
+    console.log('[SW] 已注册, scope:', reg.scope);
+    // 监听 SW 发来的激活消息
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if (event.data && event.data.type === 'CROSS_ORIGIN_ISOLATION_READY') {
+        console.log('[SW] Cross-Origin Isolation 已就绪，刷新页面...');
+        location.reload();
+      }
+    });
+    // 如果 SW 已激活（非首次），直接刷新
+    if (reg.active) {
+      console.log('[SW] 已在激活状态，刷新页面...');
+      setTimeout(() => location.reload(), 500);
+    }
+  }).catch(err => console.warn('[SW] 注册失败:', err));
+}
 
 // ★ v23: 移动端自动显示诊断面板（双击在手机上不好用）
 if (IS_MOBILE) {
@@ -1889,49 +1918,57 @@ async function initHands() {
           game.processHand(null);
         }
       });
-      // ★★★ v25: 增强版 rAF 帧循环 ★★★
-      // v24 用 rAF 替代 Camera 类，但手机端仍然回调为 0。
-      // v25 排查三个可能根因：
-      //   1. opacity:0 导致手机浏览器不解码视频帧 → 改 opacity:0.001
-      //   2. readyState>=2 守卫在部分手机上永远不通过 → 降低为 >=1
-      //   3. 并发 send() 导致 MediaPipe 拒绝处理 → 用 _sending 锁保护
-      lt.textContent = '启动手势追踪 (v25)...';
-      window._sendCount = 0;       // send() 调用次数
-      window._sendErrorCount = 0;  // send() 拒绝次数
-      window._sending = false;     // 防并发锁
-      
+      // ★★★ v26: rAF 帧循环 + 超时保护 ★★★
+      // 问题：手机端 hands.send() 的 Promise 卡在 pending 永不 resolve，
+      //       _sending 锁被永久锁死 → 后续帧全部被跳过。
+      // 修复：用发送时间戳替代布尔锁，超过 TIMEOUT 自动释放。
+      lt.textContent = '启动手势追踪 (v26)...';
+      window._sendCount = 0;
+      window._sendErrorCount = 0;
+      window._sendTs = 0;  // 上次 send 的时间戳（0=空闲）
+      const SEND_TIMEOUT = 5000; // 5 秒超时自动释放
+      const SEND_INTERVAL = 66;  // 最小发送间隔 ~15fps
+
       const _sendFrame = () => {
         window._frameLoopId = requestAnimationFrame(_sendFrame);
-        
-        // 每 60 帧打印一次调试信息
-        if (window._sendCount % 60 === 0 && window._sendCount > 0) {
-          console.log('[rAF] send调用:', window._sendCount, '回调:', window._onResultsCount, 
-            'readyState:', video.readyState, 'sending:', window._sending);
+        if (video.readyState < 1) return;
+
+        const now = performance.now();
+
+        // 超时保护：如果上一次发送超过 TIMEOUT 还没回来，强制释放
+        if (window._sendTs > 0 && now - window._sendTs > SEND_TIMEOUT) {
+          window._sendErrorCount++;
+          console.warn('[rAF] send 超时释放 (', Math.round(now - window._sendTs), 'ms)');
+          window._sendTs = 0;
         }
-        
-        // 放宽 readyState 检查：>=1 即可（HAVE_METADATA 就尝试发送）
-        if (video.readyState < 1) {
-          if (window._sendCount === 0) console.log('[rAF] 等待视频就绪, readyState:', video.readyState);
+
+        // 如果正在处理中（未超时），跳过
+        if (window._sendTs > 0) return;
+        // 速率限制
+        if (!window._lastSendAt || now - window._lastSendAt >= SEND_INTERVAL) {
+          window._lastSendAt = now;
+        } else {
           return;
         }
-        
-        // 防并发：MediaPipe 一次只能处理一帧
-        if (window._sending) return;
-        
-        window._sending = true;
+
+        window._sendTs = now;
         window._sendCount++;
-        
+
+        if (window._sendCount % 30 === 0) {
+          console.log('[rAF] 发送:', window._sendCount, '回调:', window._onResultsCount,
+            'SAB:', typeof SharedArrayBuffer !== 'undefined');
+        }
+
         hands.send({ image: video })
+          .then(() => { window._sendTs = 0; })
           .catch((err) => {
+            window._sendTs = 0;
             window._sendErrorCount++;
             console.warn('[hands.send] 错误 #' + window._sendErrorCount + ':', err.message || err);
-          })
-          .finally(() => {
-            window._sending = false;
           });
       };
       window._frameLoopId = requestAnimationFrame(_sendFrame);
-      console.log('[MediaPipe] v25 rAF 帧循环已启动');
+      console.log('[MediaPipe] v26 rAF 帧循环已启动 (SAB:', typeof SharedArrayBuffer !== 'undefined', ')');
       
       loadingOverlay.classList.add('hidden');
       statusDot.classList.add('active');
@@ -2003,10 +2040,15 @@ function gameLoop(ts) {
       } else {
         diagStale.textContent = '新鲜度: --';
       }
+      // v26: SharedArrayBuffer 状态
+      const _sabNow = typeof SharedArrayBuffer !== 'undefined';
+      diagSAB.textContent = _sabNow ? 'SAB: ✅' : 'SAB: ❌';
+      diagSAB.style.color = _sabNow ? '#0f6' : '#f66';
       // v23: onResults 回调计数
       diagCb.textContent = `回调: ${window._onResultsCount}次`;
-      // v25: send() 调用计数
-      diagSent.textContent = `发送: ${window._sendCount||0}次 | 错:${window._sendErrorCount||0}`;
+      // v26: send() 调用计数 + 超时
+      const stuck = window._sendTs > 0 ? ' 🔒' : '';
+      diagSent.textContent = `发送: ${window._sendCount||0}次 | 错:${window._sendErrorCount||0}${stuck}`;
     }
   } catch(e) {
     console.error('[GameLoop] 崩溃:', e.message, e.stack);
